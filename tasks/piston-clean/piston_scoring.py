@@ -26,13 +26,17 @@ PISTON_D = 0.075  # Honda D16 (1,6 l), aluminium; wymiary i źródła w piston_g
 PISTON_H = 0.050
 RING_BELT = 0.0175  # górne 17,5 mm z rowkami pierścieni — poza punktacją (osobne narzędzie)
 DISH_R, DISH_DEPTH = 0.026, 0.003  # wgłębienie w denku: tam komórki leżą 3 mm niżej
+INNER_R = 0.034  # wewnętrzna ścianka płaszcza (75/2 - 3,5 mm)
+BELT_Z = 0.0055  # do tej wysokości sięga cienki płaszcz od środka; wyżej gruby pierścień pod rowkami
+UNDERCROWN_Z, UNDERCROWN_R = 0.016, 0.031  # spód denka od środka
+PIN_Z, BOSS_HALF_DEG, BOSS_HALF_Z = -0.005, 20.0, 0.013  # piasty zasłaniają ściankę przy osi sworznia (x)
 N_AROUND = 20
 N_HIGH = 5
 CELL = 0.01
 
 PAD_SIZE = (0.04, 0.04, 0.04)  # gąbka 4 cm na końcu kijka (jak szczotka do mycia części, bez metalu)
 CONTACT_GAP = 0.003  # 3 mm: komórka w zasięgu poduszki
-CAPACITY = 40  # tyle komórek zbiera czysta szmatka, zanim zacznie rozmazywać
+CAPACITY = 60  # tyle komórek zbiera czysta gąbka, zanim zacznie rozmazywać
 
 # wanienka celowo węższa niż średnica tłoka: tłoka nie da się w niej zanurzyć
 TRAY_INNER = (0.10, 0.06, 0.025)  # x, y, głębokość
@@ -67,12 +71,38 @@ def _crown_cells() -> tuple[np.ndarray, np.ndarray]:
     return pts, normals
 
 
+def _inner_cells() -> tuple[np.ndarray, np.ndarray]:
+    """Wnętrze płaszcza: ścianka od środka (bez miejsc zasłoniętych piastami) i spód denka."""
+    z0, z1 = -PISTON_H / 2, BELT_Z
+    rows = 3
+    th = (np.arange(N_AROUND) + 0.5) * 2 * math.pi / N_AROUND
+    zs = z0 + (np.arange(rows) + 0.5) * (z1 - z0) / rows
+    pts, nrm = [], []
+    for t in th:
+        near_x = min(abs(math.degrees(t)) % 180, 180 - abs(math.degrees(t)) % 180) <= BOSS_HALF_DEG
+        for z in zs:
+            if near_x and abs(z - PIN_Z) <= BOSS_HALF_Z:
+                continue
+            pts.append((INNER_R * math.cos(t), INNER_R * math.sin(t), z))
+            nrm.append((-math.cos(t), -math.sin(t), 0.0))
+    g = np.arange(-3, 4) * CELL
+    for x in g:
+        for y in g:
+            if math.hypot(x, y) <= UNDERCROWN_R - CELL / 2:
+                pts.append((x, y, UNDERCROWN_Z))
+                nrm.append((0.0, 0.0, -1.0))
+    return np.asarray(pts), np.asarray(nrm)
+
+
 _SKIRT, _SKIRT_N = _skirt_cells()
 _CROWN, _CROWN_N = _crown_cells()
-CELLS_LOCAL = np.vstack([_SKIRT, _CROWN])
-NORMALS_LOCAL = np.vstack([_SKIRT_N, _CROWN_N])
+_INNER, _INNER_N = _inner_cells()
+CELLS_LOCAL = np.vstack([_SKIRT, _CROWN, _INNER])
+NORMALS_LOCAL = np.vstack([_SKIRT_N, _CROWN_N, _INNER_N])
 N_CELLS = len(CELLS_LOCAL)
 N_SKIRT = len(_SKIRT)
+N_CROWN = len(_CROWN)
+N_INNER = len(_INNER)
 
 
 def quat_xyzw_to_matrix(q: np.ndarray) -> np.ndarray:
@@ -140,7 +170,10 @@ class Ledger:
                 self.rinses += 1
             self.load = 0
             return
-        touch = pad_contacts(cells_world(piston_pos, piston_quat), pad_pos, pad_quat)
+        rot = quat_xyzw_to_matrix(piston_quat)
+        cw = CELLS_LOCAL @ rot.T + np.asarray(piston_pos)
+        facing = np.einsum("ij,ij->i", np.asarray(pad_pos) - cw, NORMALS_LOCAL @ rot.T) > 0  # gąbka po stronie powierzchni
+        touch = pad_contacts(cw, pad_pos, pad_quat) & facing
         if not touch.any():
             return
         if self.load >= CAPACITY:  # nasycona: rozmazuje

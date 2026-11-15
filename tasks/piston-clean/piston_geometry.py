@@ -35,6 +35,8 @@ WALL = 3.5 * MM
 # rowki od denka w dół: (górna krawędź, dolna krawędź), mm od denka
 GROOVES_MM = ((5.0, 6.2), (9.5, 11.0), (14.0, 16.5))
 RING_BELT = 17.5 * MM  # pas pierścieni poza punktacją
+BELT_Z = PISTON_HEIGHT / 2 - RING_BELT - 2.0 * MM  # dolna krawędź grubego pierścienia pod rowkami
+BELT_INNER = GROOVE_R - 3.0 * MM  # promień wewnętrzny pod rowkami: >= 3 mm materiału za rowkiem
 
 # --- korbowód -------------------------------------------------------------------------------------------------
 CTC = 137.0 * MM
@@ -42,6 +44,13 @@ ROD_T = 20.0 * MM  # grubość (wzdłuż osi sworznia)
 SMALL_IN, SMALL_OUT = PIN_D / 2, 13.0 * MM
 BIG_IN, BIG_OUT = 24.0 * MM, 31.0 * MM
 BEAM_W_SMALL, BEAM_W_BIG = 18.0 * MM, 28.0 * MM  # szerokość belki przy stopie i przy łbie
+
+
+def rod_swing_limit_deg(half_width: float = 10.0 * MM) -> float:
+    """Kąt, przy którym bok belki dotyka dolnej krawędzi płaszcza (od osi tłoka)."""
+    r_in, below = R - WALL, PIN_Z + PISTON_HEIGHT / 2  # promień wewnętrzny, sworzeń nad krawędzią
+    rr = math.hypot(r_in, below)
+    return math.degrees(math.acos(half_width / rr) - math.atan2(below, r_in))
 FLANGE_T, WEB_T = 4.0 * MM, 7.0 * MM  # dwuteownik: półki i środnik
 
 
@@ -57,8 +66,25 @@ def piston_profile() -> list[tuple[float, float]]:
         za, zb = top - a * MM, top - b * MM
         pts += [(R, za), (GROOVE_R, za), (GROOVE_R, zb), (R, zb)]
     inner = R - WALL
-    pts += [(R, bot), (inner, bot), (inner, top - CROWN_T), (0.0, top - CROWN_T)]
+    # od środka: cienki płaszcz do pasa pierścieni, wyżej gruby pierścień, żeby za rowkami zostało >= 3 mm
+    pts += [(R, bot), (inner, bot), (inner, BELT_Z), (BELT_INNER, BELT_Z), (BELT_INNER, top - CROWN_T), (0.0, top - CROWN_T)]
     return pts
+
+
+def piston_colliders(segments: int = 16) -> list[tuple[str, tuple, tuple]]:
+    """Puste zderzenia tłoka z prostych brył: denko (walec), pierścień pasa i płaszcz (prostopadłościany).
+    Zwraca (rodzaj, środek, rozmiar): ("cyl", c, (r, h)) albo ("box", c, (sx, sy, sz, yaw))."""
+    top, bot = _top_z(), -PISTON_HEIGHT / 2
+    out = [("cyl", (0.0, 0.0, top - CROWN_T / 2), (R, CROWN_T))]
+    for r_in, z0, z1 in ((BELT_INNER, BELT_Z, top - CROWN_T), (R - WALL, bot, BELT_Z)):
+        rm, t = (R + r_in) / 2, R - r_in
+        w = 2 * R * math.tan(math.pi / segments) + 0.0005  # zakładka, żeby nie było szpar
+        for i in range(segments):
+            a = 2 * math.pi * i / segments
+            out.append(("box", (rm * math.cos(a), rm * math.sin(a), (z0 + z1) / 2), (t, w, z1 - z0, a)))
+    for side in (-1, 1):  # piasty sworznia
+        out.append(("box", (side * (R - WALL - 0.008), 0.0, PIN_Z), (0.016, 0.022, 0.026, 0.0)))
+    return out
 
 
 def lathe(profile: list[tuple[float, float]], segments: int = 64) -> tuple[np.ndarray, np.ndarray, np.ndarray]:

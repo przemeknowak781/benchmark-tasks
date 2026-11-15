@@ -55,15 +55,39 @@ def wipe_everything(ledger, rinse_when_loaded=True):
         step(ledger, top, FLAT_Q)
 
 
+def wipe_inside(ledger):
+    """Gąbka wewnątrz płaszcza: ścianka dookoła i spód denka."""
+    for k in range(ps.N_AROUND):
+        a = 2 * math.pi * k / ps.N_AROUND
+        for dz in (-0.014, -0.004):
+            if ledger.load > ps.CAPACITY - 12:
+                rinse(ledger)
+            c = PISTON_POS + np.array([(ps.INNER_R - ps.PAD_SIZE[0] / 2 + 0.001) * math.cos(a), (ps.INNER_R - ps.PAD_SIZE[0] / 2 + 0.001) * math.sin(a), dz])
+            step(ledger, c, yaw_q(a))
+    for dx, dy in [(a, b) for a in (-0.012, 0.012) for b in (-0.012, 0.012)]:
+        if ledger.load > ps.CAPACITY - 16:
+            rinse(ledger)
+        step(ledger, PISTON_POS + np.array([dx, dy, ps.UNDERCROWN_Z - ps.PAD_SIZE[2] / 2 + 0.001]), FLAT_Q)
+
+
+def test_outside_wipe_does_not_clean_inside():
+    led = ps.Ledger()
+    wipe_everything(led)
+    inner = led.dirty[ps.N_SKIRT + ps.N_CROWN :]
+    assert inner.all()  # przez ściankę się nie czyści
+
+
 def test_grid_size_matches_spec():
     assert ps.N_SKIRT == 100
-    assert 38 <= ps.N_CELLS - ps.N_SKIRT <= 50  # denko 75 mm: ok. 44 cm2
+    assert 38 <= ps.N_CROWN <= 50  # denko 75 mm: ok. 44 cm2
     assert ps.CAPACITY < ps.N_CELLS * 0.95 / 3  # pełny wynik wymaga co najmniej 3 płukań
+    assert 60 <= ps.N_INNER <= 90
 
 
 def test_full_clean_with_rinses_scores_one():
     led = ps.Ledger()
     wipe_everything(led)
+    wipe_inside(led)
     assert led.clean_fraction >= 0.95
     assert led.rinses >= 3
     assert led.score(on_mat=True, resting=True) == 1.0
@@ -72,6 +96,7 @@ def test_full_clean_with_rinses_scores_one():
 def test_still_in_gripper_caps_below_one():
     led = ps.Ledger()
     wipe_everything(led)
+    wipe_inside(led)
     assert led.score(on_mat=True, resting=False) == 0.75
 
 
