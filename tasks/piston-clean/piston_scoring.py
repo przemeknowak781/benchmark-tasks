@@ -36,6 +36,9 @@ CELL = 0.01
 
 PAD_SIZE = (0.04, 0.04, 0.04)  # gąbka 4 cm na końcu kijka (jak szczotka do mycia części, bez metalu)
 CONTACT_GAP = 0.003  # 3 mm: komórka w zasięgu poduszki
+SOFT_LAYER = 0.005  # gąbka: twardszy rdzeń 3 cm + 5 mm miękkiej warstwy (zderza się rdzeń)
+CORE_TOUCH = 0.0015  # rdzeń musi dotykać powierzchni (komórka w rdzeniu + 1,5 mm)
+WRAP = 0.006  # ściśnięta gąbka obejmuje krzywiznę: komórki do 6 mm za miękkim licem
 CAPACITY = 60  # tyle komórek zbiera czysta gąbka, zanim zacznie rozmazywać
 
 # wanienka celowo węższa niż średnica tłoka: tłoka nie da się w niej zanurzyć
@@ -120,12 +123,22 @@ def cells_world(pos: np.ndarray, quat_xyzw: np.ndarray) -> np.ndarray:
     return CELLS_LOCAL @ quat_xyzw_to_matrix(quat_xyzw).T + np.asarray(pos)
 
 
-def pad_contacts(cells_w: np.ndarray, pad_pos: np.ndarray, pad_quat: np.ndarray) -> np.ndarray:
-    """Maska komórek w zasięgu poduszki (pudełko powiększone o CONTACT_GAP)."""
+def pad_contacts(cells_w: np.ndarray, pad_pos: np.ndarray, pad_quat: np.ndarray, half=None) -> np.ndarray:
+    """Maska komórek wewnątrz pudełka gąbki o połowie rozmiaru `half` (domyślnie gąbka + CONTACT_GAP)."""
     rot = quat_xyzw_to_matrix(pad_quat)
-    local = (cells_w - np.asarray(pad_pos)) @ rot  # do układu poduszki
-    half = np.asarray(PAD_SIZE) / 2 + CONTACT_GAP
+    local = (cells_w - np.asarray(pad_pos)) @ rot  # do układu gąbki
+    if half is None:
+        half = np.asarray(PAD_SIZE) / 2 + CONTACT_GAP
     return np.all(np.abs(local) <= half, axis=1)
+
+
+def sponge_wipes(cells_w, facing, pad_pos, pad_quat) -> np.ndarray:
+    """Czyści tylko dociśnięta gąbka: rdzeń dotyka powierzchni, a wtedy liczą się komórki pod miękką
+    warstwą objętą z zapasem WRAP (gąbka ugina się na krzywiźnie). Bez docisku — nic."""
+    core = np.asarray(PAD_SIZE) / 2 - SOFT_LAYER + CORE_TOUCH
+    if not (pad_contacts(cells_w, pad_pos, pad_quat, core) & facing).any():
+        return np.zeros(len(cells_w), dtype=bool)
+    return pad_contacts(cells_w, pad_pos, pad_quat, np.asarray(PAD_SIZE) / 2 + WRAP) & facing
 
 
 def pad_in_solvent(pad_pos: np.ndarray, tray_center: np.ndarray, tray_floor_z: float) -> bool:
@@ -173,7 +186,7 @@ class Ledger:
         rot = quat_xyzw_to_matrix(piston_quat)
         cw = CELLS_LOCAL @ rot.T + np.asarray(piston_pos)
         facing = np.einsum("ij,ij->i", np.asarray(pad_pos) - cw, NORMALS_LOCAL @ rot.T) > 0  # gąbka po stronie powierzchni
-        touch = pad_contacts(cw, pad_pos, pad_quat) & facing
+        touch = sponge_wipes(cw, facing, pad_pos, pad_quat)
         if not touch.any():
             return
         if self.load >= CAPACITY:  # nasycona: rozmazuje

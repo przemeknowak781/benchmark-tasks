@@ -35,7 +35,7 @@ SCENE = "station"
 TOP: float = TABLE_TOP[SCENE]
 
 # --- układ (świat: x od ramion, y w lewo, z w górę; metry) ---------------------------------------------------
-MAT_CENTER = (0.30, 0.03)
+MAT_CENTER = (0.30, -0.02)
 MAT_SIZE = (0.30, 0.30, 0.004)
 MAT_TOP = TOP + MAT_SIZE[2]
 
@@ -44,7 +44,7 @@ ROD = "conrod"
 STICK = "sponge_stick"
 PAD = "sponge"
 PISTON_R = ps.PISTON_D / 2
-PISTON_POS = (0.30, 0.06, MAT_TOP + ps.PISTON_H / 2)  # tłok stoi denkiem na macie, płaszcz otwarty do góry
+PISTON_POS = (0.30, 0.02, MAT_TOP + ps.PISTON_H / 2)  # tłok stoi denkiem na macie, płaszcz otwarty do góry
 PISTON_MASS = 0.30  # tłok ~245 g (oferty CP dla D16) + sworzeń rurowy ~55 g
 ROD_SIZE = (pg.ROD_T, 0.035, pg.CTC + 2 * 0.022)  # zderzenia: x grubość (oś sworznia), y szerokość belki, z długość
 ROD_MASS = 0.47  # ~470 g z pokrywą i śrubami
@@ -56,15 +56,18 @@ PIN_LIMIT_DEG = pg.rod_swing_limit_deg()  # ~44,8°: bok belki opiera się o dol
 
 STICK_SIZE = (0.20, 0.016, 0.016)  # drewniany trzonek wzdłuż x
 STICK_MASS = 0.025  # drewno ~0,6 g/cm3
-PAD_POS = (0.33, -0.25, TOP + ps.PAD_SIZE[2] / 2 + 0.001)
+SOFT = 0.005  # miękka warstwa gąbki (mm-y ugięcia): zderza się rdzeń, punktacja liczy całą gąbkę 4 cm
+PAD_CORE = tuple(s - 2 * SOFT for s in ps.PAD_SIZE)
+PAD_POS = (0.33, 0.30, TOP + PAD_CORE[2] / 2 + 0.001)
 PAD_MASS = 0.003  # gąbka PU ~0,05 g/cm3
 STICK_TO_PAD = STICK_SIZE[0] / 2 + ps.PAD_SIZE[0] / 2  # środek kijka -> środek gąbki, wzdłuż x
-STICK_POS = (PAD_POS[0] - STICK_TO_PAD, PAD_POS[1], PAD_POS[2])
+STICK_DZ = ps.PAD_SIZE[2] / 2 - STICK_SIZE[2] / 2  # kijek przy górze gąbki: gąbka wchodzi w płaszcz, kijek nad brzegiem
+STICK_POS = (PAD_POS[0] - STICK_TO_PAD, PAD_POS[1], PAD_POS[2] + STICK_DZ)
 REST_SIZE = (0.03, 0.03, STICK_POS[2] - STICK_SIZE[2] / 2 - TOP)  # klocek pod bliższym końcem trzonka
 REST_POS = (STICK_POS[0] - STICK_SIZE[0] / 2 + 0.02, STICK_POS[1], TOP + REST_SIZE[2] / 2)
 STICK_JOINT = "sponge_glue"
 
-TRAY_CENTER = (0.36, -0.15)
+TRAY_CENTER = (0.36, 0.20)
 TRAY_WALL = 0.004
 TRAY_FLOOR_Z = TOP + 0.002  # dno wanienki (2 mm blachy)
 
@@ -96,7 +99,7 @@ OBJECTS = [
     Box(ROD, ROD_POS, STEEL, mass=ROD_MASS, size=ROD_SIZE),
     Box("stick_rest", REST_POS, (0.35, 0.36, 0.38), size=REST_SIZE),
     Box(STICK, STICK_POS, WOOD_RGB, mass=STICK_MASS, size=STICK_SIZE),
-    Box(PAD, PAD_POS, SPONGE_RGB, mass=PAD_MASS, size=ps.PAD_SIZE),
+    Box(PAD, PAD_POS, SPONGE_RGB, mass=PAD_MASS, size=PAD_CORE),
     *_tray_parts(),
 ]
 
@@ -249,12 +252,20 @@ def author_pin(stage: Any, env_root: str) -> None:
 
 
 def author_glue(stage: Any, env_root: str) -> None:
+    pad = f"{env_root}/{PAD}"
+    _retire_primitive(stage, pad)  # rdzeń niewidoczny; widać pełną gąbkę
+    foam = _material(stage, f"{pad}/visual/foam", SPONGE_RGB, 0.0, 0.9)
+    _cube(stage, f"{pad}/visual/foam_block", (0.0, 0.0, 0.0), ps.PAD_SIZE, foam)
+    _author_glue_joint(stage, env_root)
+
+
+def _author_glue_joint(stage: Any, env_root: str) -> None:
     gf = importlib.import_module("pxr.Gf")
     physics = importlib.import_module("pxr.UsdPhysics")
     joint = physics.FixedJoint.Define(stage, f"{env_root}/{STICK_JOINT}")
     joint.CreateBody0Rel().SetTargets([f"{env_root}/{STICK}"])
     joint.CreateBody1Rel().SetTargets([f"{env_root}/{PAD}"])
-    joint.CreateLocalPos0Attr(gf.Vec3f(STICK_TO_PAD, 0.0, 0.0))
+    joint.CreateLocalPos0Attr(gf.Vec3f(STICK_TO_PAD, 0.0, -STICK_DZ))
     joint.CreateLocalRot0Attr(gf.Quatf(1.0, 0.0, 0.0, 0.0))
     joint.CreateLocalPos1Attr(gf.Vec3f(0.0, 0.0, 0.0))
     joint.CreateLocalRot1Attr(gf.Quatf(1.0, 0.0, 0.0, 0.0))
@@ -418,7 +429,9 @@ def _debug(objects) -> None:
         for name in (PISTON, ROD, STICK, PAD):
             o = objects[name]
             row.append(f"{name}=({o.pos[0]:.3f},{o.pos[1]:.3f},{o.pos[2]:.3f}) q=({o.quat_xyzw[0]:.2f},{o.quat_xyzw[1]:.2f},{o.quat_xyzw[2]:.2f},{o.quat_xyzw[3]:.2f})")
-        row.append(f"clean={_LEDGER.clean_fraction:.2f} load={_LEDGER.load} zero={_LEDGER.zeroed}")
+        d = _LEDGER.dirty
+        g = (ps.N_SKIRT, ps.N_SKIRT + ps.N_CROWN)
+        row.append(f"clean={_LEDGER.clean_fraction:.2f} dirty skirt/crown/inner={d[:g[0]].sum()}/{d[g[0]:g[1]].sum()}/{d[g[1]:].sum()} load={_LEDGER.load} rinses={_LEDGER.rinses} zero={_LEDGER.zeroed}")
         f.write(" ".join(row) + chr(10))
 
 
@@ -434,23 +447,110 @@ def score(objects) -> float:
 
 # --- demo (iteracja 1): chwyt korbowodu, podniesienie, obrót; prawa ręka bierze kijek -----------------------------
 # Otwarta pętla: pozycje policzone z ustalonego układu startowego, bez odczytu póz z symulatora.
-_ROD_TILT = math.asin((PIN[2] - (MAT_TOP + ROD_SIZE[2] / 2)) / pg.CTC)  # korbowód opadnięty na matę
-GRIP_D = 0.075  # chwyt 7,5 cm od sworznia: zwisający tłok mija palce
-ROD_GRIP = (PIN[0], PIN[1] - GRIP_D * math.cos(_ROD_TILT), PIN[2] - GRIP_D * math.sin(_ROD_TILT))
+# Położenie po przewróceniu się zespołu (ustalone w symulacji przy object_jitter=0, kalibracja z zapisu póz;
+# skrypt ich nie czyta): korbowód leży na wąskiej krawędzi wzdłuż -y, łeb w stronę prawej ręki.
+ROD_REST = (0.297, PISTON_POS[1] - 0.114, MAT_TOP + 0.0435)  # środek bryły korbowodu
+ROD_GRIP = (ROD_REST[0], ROD_REST[1] - 0.04, ROD_REST[2] + 0.005)  # 4 cm od środka w stronę łba
 STICK_GRIP = (STICK_POS[0] - 0.03, STICK_POS[1], STICK_POS[2])
+YAW_ACROSS_X = math.pi / 2  # palce zamykają się wzdłuż x (w poprzek grubości korbowodu)
 
 
 def _above(p, dz):
     return (p[0], p[1], p[2] + dz)
 
 
-def _turned_grip(pin_xy, z, phi):
-    """Gdzie trzymać korbowód, żeby po obrocie o phi sworzeń został nad tym samym punktem."""
-    d = GRIP_D * math.cos(_ROD_TILT)
-    return (pin_xy[0] + d * math.sin(phi), pin_xy[1] - d * math.cos(phi), z)
+# Pozy zwisającego tłoka po podniesieniu (kalibracja przy object_jitter=0): środek i obrót wokół pionu.
+HANG = {  # yaw nadgarstka prawej ręki (wzgl. chwytu) -> (środek tłoka, obrót tłoka wokół pionu)
+    0: ((0.289, -0.070, 0.832), math.radians(3.4)),
+    -90: ((0.358, -0.132, 0.830), math.radians(-87.7)),
+    90: ((0.237, -0.099, 0.836), math.radians(58.7)),
+}
+L_PAD = STICK_TO_PAD + 0.03  # TCP -> środek gąbki wzdłuż kijka
+GAP = -0.006  # rdzeń planowo 6 mm w płaszczu: ramię z kijkiem ugina się ~7 mm (zmierzone), realnie styk z dociskiem
+SAG_Z = 0.006  # kijek z gąbką opada ~6 mm względem planu (zmierzone)
+SKIRT_BAND_Z = (ps.PISTON_H / 2 - ps.RING_BELT) / 2 + 0.0  # środek pasa płaszcza nad środkiem bryły (denko w dół)
+
+
+def _wrap(a):
+    return (a + math.pi) % (2 * math.pi) - math.pi
+
+
+def _tcp_for_pad(pad, stick_dir):
+    """TCP lewej ręki dla środka gąbki `pad`, gdy kijek wskazuje (od rączki do gąbki) kierunek stick_dir [rad]."""
+    return (pad[0] - L_PAD * math.cos(stick_dir), pad[1] - L_PAD * math.sin(stick_dir), pad[2] + STICK_DZ)
+
+
+def _side_wipe(centre, psi, t=1.0):
+    """Gąbka dochodzi do płaszcza od azymutu psi (świat), czołem do osi tłoka."""
+    stick_dir = _wrap(psi + math.pi)
+    r_in = ps.PISTON_D / 2 + PAD_CORE[0] / 2 + GAP  # rdzeń 0,5 mm od płaszcza, miękka warstwa wciśnięta
+    z = centre[2] + SKIRT_BAND_Z + SAG_Z
+    near = (centre[0] + r_in * math.cos(psi), centre[1] + r_in * math.sin(psi), z)
+    far = (centre[0] + (r_in + 0.05) * math.cos(psi), centre[1] + (r_in + 0.05) * math.sin(psi), z)
+    return [
+        Waypoint(1.5 * t, _tcp_for_pad(far, stick_dir), FINGER_CLOSED, f"approach {math.degrees(psi):.0f}", stick_dir),
+        Waypoint(1.0 * t, _tcp_for_pad(near, stick_dir), FINGER_CLOSED, "wipe", stick_dir),
+        Waypoint(0.5 * t, _tcp_for_pad(near, stick_dir), FINGER_CLOSED, "hold", stick_dir),
+        Waypoint(0.8 * t, _tcp_for_pad(far, stick_dir), FINGER_CLOSED, "back off", stick_dir),
+    ]
+
+
+def _rinse():
+    pad = (TRAY_CENTER[0], TRAY_CENTER[1], TRAY_FLOOR_Z + ps.PAD_SIZE[2] / 2 + 0.003)
+    above = (pad[0], pad[1], pad[2] + 0.08)
+    return [
+        Waypoint(2.0, _tcp_for_pad(above, 0.0), FINGER_CLOSED, "over the tray", 0.0),
+        Waypoint(1.0, _tcp_for_pad(pad, 0.0), FINGER_CLOSED, "dip", 0.0),
+        Waypoint(0.6, _tcp_for_pad(pad, 0.0), FINGER_CLOSED, "rinse", 0.0),
+        Waypoint(1.0, _tcp_for_pad(above, 0.0), FINGER_CLOSED, "lift out", 0.0),
+    ]
+
+
+PHASES = ((0, (50, 90, 130, 170, 190)), (-90, (130, 170, 190)), (90, (20, 60, 100)))  # yaw prawej -> azymuty gąbki
+SHIFT = {0: (0.0, 0.0), -90: (0.0, 0.0), 90: (-0.07, 0.0)}  # przesunięcie punktu uniesienia w fazie (bliżej lewej ręki)
+
+
+def hang(yaw_deg):
+    (cx, cy, cz), rot = HANG[yaw_deg]
+    dx, dy = SHIFT[yaw_deg]
+    return (cx + dx, cy + dy, cz), rot
+
+
+def _dur(ws):
+    return sum(w.duration for w in ws)
 
 
 def demo() -> dict:
-    """Na razie postój: obserwacja, jak zespół ustala się po starcie (korbowód opada na krawędź płaszcza)."""
-    hold = lambda y: [Waypoint(4.0, (0.22, y, TOP + 0.30), FINGER_OPEN, "hold above the table")]  # noqa: E731
-    return {"left": hold(0.25), "right": hold(-0.25)}
+    lift = (ROD_GRIP[0], ROD_GRIP[1], TOP + 0.20)
+    right = [
+        Waypoint(2.0, _above(ROD_GRIP, 0.08), FINGER_OPEN, "above the rod", YAW_ACROSS_X),
+        Waypoint(1.5, ROD_GRIP, FINGER_OPEN, "descend to the rod", YAW_ACROSS_X),
+        Waypoint(0.8, ROD_GRIP, FINGER_CLOSED, "grip the rod", YAW_ACROSS_X),
+        Waypoint(2.5, lift, FINGER_CLOSED, "lift", YAW_ACROSS_X),
+    ]
+    left = [
+        Waypoint(2.0, _above(STICK_GRIP, 0.08), FINGER_OPEN, "above the handle", 0.0),
+        Waypoint(1.5, STICK_GRIP, FINGER_OPEN, "descend to the handle", 0.0),
+        Waypoint(0.8, STICK_GRIP, FINGER_CLOSED, "grip the handle", 0.0),
+        Waypoint(1.5, _above(STICK_GRIP, 0.12), FINGER_CLOSED, "lift the sponge", 0.0),
+        Waypoint(1.5, _above(STICK_GRIP, 0.12), FINGER_CLOSED, "wait for the piston", 0.0),
+    ]
+    park = _above(STICK_GRIP, 0.12)
+    touches = 0
+    for k, (yaw_deg, psis) in enumerate(PHASES):
+        if k:  # obrót tłoka: lewa ręka odsuwa gąbkę, prawa obraca nadgarstek
+            left.append(Waypoint(1.5, park, FINGER_CLOSED, "park the sponge", 0.0))
+            hold = _dur(left) - _dur(right)
+            right.append(Waypoint(max(hold, 0.1), right[-1].pos, FINGER_CLOSED, "hold", right[-1].yaw))
+            dx, dy = SHIFT[yaw_deg]
+            moved = (lift[0] + dx, lift[1] + dy, lift[2])
+            right.append(Waypoint(2.5, moved, FINGER_CLOSED, f"turn {yaw_deg}", YAW_ACROSS_X + math.radians(yaw_deg)))
+            left.append(Waypoint(_dur(right) - _dur(left) + 1.0, park, FINGER_CLOSED, "wait for the turn", 0.0))
+        centre, _rot = hang(yaw_deg)
+        for deg in psis:
+            if touches and touches % 2 == 0:
+                left += _rinse()
+            left += _side_wipe(centre, math.radians(deg))
+            touches += 1
+    right.append(Waypoint(_dur(left) - _dur(right) + 1.0, right[-1].pos, FINGER_CLOSED, "hold", right[-1].yaw))
+    return {"left": left, "right": right}
