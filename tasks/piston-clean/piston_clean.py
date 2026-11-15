@@ -77,7 +77,8 @@ TRAY_FLOOR_Z = TOP + 0.002  # dno wanienki (2 mm blachy)
 
 STEEL = (0.62, 0.64, 0.66)
 ALU = (0.78, 0.78, 0.76)
-OILY = (0.52, 0.40, 0.22)  # olej na tłoku pokazuje kolor; czystość liczy punktacja
+OILY = (0.30, 0.20, 0.08)  # ciemnobrązowy przepracowany olej: łatki na brudnych komórkach
+ALU = (0.74, 0.74, 0.71)  # czyste aluminium odlewu
 MAT_RGB = (0.12, 0.12, 0.12)
 SPONGE_RGB = (0.95, 0.80, 0.25)
 WOOD_RGB = (0.62, 0.45, 0.28)
@@ -211,7 +212,9 @@ def author_visuals(stage: Any, env_root: str) -> None:
     piston, rod = f"{env_root}/{PISTON}", f"{env_root}/{ROD}"
     _retire_primitive(stage, piston)
     _retire_primitive(stage, rod)
-    alu = _material(stage, f"{piston}/visual/alu", OILY, 0.6, 0.35)  # aluminium pod warstwą oleju
+    alu = _material(stage, f"{piston}/visual/alu", ALU, 0.6, 0.35)
+    oil = _material(stage, f"{piston}/visual/oil", OILY, 0.1, 0.15)  # połyskliwy olej
+    _author_dirt(stage, piston, oil)
     steel = _material(stage, f"{rod}/visual/steel", (0.36, 0.37, 0.39), 0.85, 0.4)
     _mesh(stage, f"{piston}/visual/body", pg.lathe(pg.piston_profile(), 96), alu, P_BODY)
     inner = pg.R - pg.WALL
@@ -231,6 +234,50 @@ def author_visuals(stage: Any, env_root: str) -> None:
     for side in (-1, 1):  # śruby pokrywy łba
         c = (0.0, -pg.CTC / 2, side * (pg.BIG_IN + 0.0035))
         _cube(stage, f"{rod}/visual/bolt_{'ab'[side > 0]}", R_ROD @ np.asarray(c), _perm(R_ROD, (pg.ROD_T + 0.004, 0.012, 0.008)), steel)
+
+
+_DIRT_PATHS: dict[str, list[str]] = {}  # korzeń środowiska -> ścieżki łatek oleju (kolejność komórek)
+_SHOWN: dict[str, np.ndarray] = {}
+
+
+def _author_dirt(stage, piston, mat) -> None:
+    """Na każdej komórce kwadratowa łatka oleju 0,3 mm nad powierzchnią; znika, gdy komórka jest czysta."""
+    half = ps.CELL * 0.48
+    cells = ps.CELLS_LOCAL @ P_BODY.T
+    normals = ps.NORMALS_LOCAL @ P_BODY.T
+    paths = []
+    for i, (c, n) in enumerate(zip(cells, normals)):
+        n = n / np.linalg.norm(n)
+        a = np.cross(n, [0.0, 0.0, 1.0]) if abs(n[2]) < 0.9 else np.cross(n, [1.0, 0.0, 0.0])
+        a /= np.linalg.norm(a)
+        b = np.cross(n, a)
+        o = c + n * 0.0003
+        quad = np.array([o - half * a - half * b, o + half * a - half * b, o + half * a + half * b, o - half * a + half * b])
+        path = f"{piston}/visual/dirt/c{i:03d}"
+        _mesh(stage, path, (quad, np.array([4]), np.arange(4)), mat)
+        paths.append(path)
+    root = piston.rsplit("/", 1)[0]
+    _DIRT_PATHS[root] = paths
+    _SHOWN[root] = np.ones(len(paths), dtype=bool)
+
+
+def _show_dirt(dirty: np.ndarray) -> None:
+    """Pokazuje stan oleju na tłoku (tylko zmienione łatki). Bez symulatora — nic."""
+    if not _DIRT_PATHS:
+        return
+    try:
+        stage = importlib.import_module("omni.usd").get_context().get_stage()
+        geom = importlib.import_module("pxr.UsdGeom")
+    except Exception:
+        return
+    for root, paths in _DIRT_PATHS.items():
+        changed = np.flatnonzero(_SHOWN[root] != dirty)
+        for i in changed:
+            prim = stage.GetPrimAtPath(paths[i])
+            if prim.IsValid():
+                img = geom.Imageable(prim)
+                img.MakeVisible() if dirty[i] else img.MakeInvisible()
+        _SHOWN[root] = dirty.copy()
 
 
 def author_pin_and_visuals(stage: Any, env_root: str) -> None:
@@ -454,6 +501,7 @@ def _debug(objects) -> None:
 
 def score(objects) -> float:
     _observe(objects)
+    _show_dirt(_LEDGER.dirty)
     if _DEBUG:
         _debug(objects)
     p, rod = objects[PISTON], objects[ROD]
