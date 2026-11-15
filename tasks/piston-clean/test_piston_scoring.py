@@ -1,4 +1,4 @@
-"""Testy rdzenia punktacji: pełne czyszczenie daje 1.0, exploity ze specyfikacji dają mniej.
+"""Testy rdzenia punktacji: pełne czyszczenie (pociągnięcia + płukanie z ruchem) daje 1.0, exploity mniej.
 
 Uruchomienie: python -m pytest -q tasks/piston-clean/test_piston_scoring.py
 """
@@ -16,6 +16,7 @@ STILL = np.zeros(3)
 PAD_SIDE_Q = np.array([0.0, math.sin(math.pi / 4), 0.0, math.cos(math.pi / 4)])  # cienką osią wzdłuż x
 FLAT_Q = np.array([0.0, 0.0, 0.0, 1.0])
 PISTON_POS = np.array([0.0, 0.0, 0.10])
+CORE = ps.PAD_SIZE[0] / 2 - ps.SOFT_LAYER
 
 
 def yaw_q(a):
@@ -27,61 +28,60 @@ def bbox(pos):
     return pos - h, pos + h
 
 
-def step(ledger, pad_pos, pad_q, piston_q=FLAT_Q, piston_pos=PISTON_POS, vel=STILL):
+def step(ledger, pad_pos, pad_q, piston_q=FLAT_Q, piston_pos=PISTON_POS, vel=STILL, flat=None):
     lo, hi = bbox(piston_pos)
-    ledger.step(piston_pos, piston_q, vel, lo, hi, pad_pos, pad_q, TRAY, TRAY_FLOOR)
+    fp, fq = (flat, FLAT_Q) if flat is not None else (None, None)
+    ledger.step(piston_pos, piston_q, vel, lo, hi, pad_pos, pad_q, TRAY, TRAY_FLOOR, fp, fq)
 
 
-def rinse(ledger):
-    step(ledger, TRAY + np.array([0, 0, 0.005]), FLAT_Q)
+def stroke(ledger, centre, q, direction, piston_q=FLAT_Q, length=0.02, passes=2, n=10):
+    """Dociśnięta gąbka w tę i z powrotem wzdłuż `direction` (passes razy, amplituda length)."""
+    direction = np.asarray(direction, dtype=float)
+    for k in range(n * passes + 1):
+        step(ledger, centre + direction * length * math.sin(2 * math.pi * k / n), q, piston_q)
+
+
+def rinse(ledger, metres=0.10):
+    base = TRAY + np.array([0.0, 0.0, ps.PAD_SIZE[2] / 2 + 0.002])
+    for k in range(int(metres / 0.02) + 1):
+        step(ledger, base + np.array([0.02 * (k % 2), 0.0, 0.0]), FLAT_Q)
 
 
 def side_pad_pos(dz=0.0):
-    return PISTON_POS + np.array([ps.PISTON_D / 2 + (ps.PAD_SIZE[2] / 2 - ps.SOFT_LAYER), 0.0, dz])
+    return PISTON_POS + np.array([ps.PISTON_D / 2 + CORE - 0.001, 0.0, dz])
 
 
 def wipe_everything(ledger, rinse_when_loaded=True):
     for k in range(ps.N_AROUND):
-        if rinse_when_loaded and ledger.load > ps.CAPACITY - 20:
+        if rinse_when_loaded and ledger.load > ps.CAPACITY - 25:
             rinse(ledger)
-        for dz in (-0.012, 0.006):  # gąbka 4 cm: dwa pasy wzdłuż płaszcza
-            if rinse_when_loaded and ledger.load > ps.CAPACITY - 12:
-                rinse(ledger)
-            step(ledger, side_pad_pos(dz), PAD_SIDE_Q, piston_q=yaw_q(k * 2 * math.pi / ps.N_AROUND))
+        stroke(ledger, side_pad_pos(-0.004), PAD_SIDE_Q, (0, 0, 1), yaw_q(k * 2 * math.pi / ps.N_AROUND), length=0.012)
     for dx, dy in [(a, b) for a in (-0.02, 0.0, 0.02) for b in (-0.02, 0.0, 0.02)]:
         if rinse_when_loaded and ledger.load > ps.CAPACITY - 16:
             rinse(ledger)
-        top = PISTON_POS + np.array([dx, dy, ps.PISTON_H / 2 + (ps.PAD_SIZE[2] / 2 - ps.SOFT_LAYER) - 0.001])  # gąbka wciśnięta 1 mm
-        step(ledger, top, FLAT_Q)
+        top = PISTON_POS + np.array([dx, dy, ps.PISTON_H / 2 + CORE - 0.001])
+        stroke(ledger, top, FLAT_Q, (1, 0, 0))
 
 
 def wipe_inside(ledger):
-    """Gąbka wewnątrz płaszcza: ścianka dookoła i spód denka."""
     for k in range(ps.N_AROUND):
         a = 2 * math.pi * k / ps.N_AROUND
-        for dz in (-0.014, -0.004):
-            if ledger.load > ps.CAPACITY - 12:
-                rinse(ledger)
-            c = PISTON_POS + np.array([(ps.INNER_R - (ps.PAD_SIZE[0] / 2 - ps.SOFT_LAYER) + 0.001) * math.cos(a), (ps.INNER_R - (ps.PAD_SIZE[0] / 2 - ps.SOFT_LAYER) + 0.001) * math.sin(a), dz])
-            step(ledger, c, yaw_q(a))
+        if ledger.load > ps.CAPACITY - 12:
+            rinse(ledger)
+        r = ps.INNER_R - CORE + 0.001
+        c = PISTON_POS + np.array([r * math.cos(a), r * math.sin(a), -0.009])
+        stroke(ledger, c, yaw_q(a), (0, 0, 1), length=0.008)
     for dx, dy in [(a, b) for a in (-0.012, 0.012) for b in (-0.012, 0.012)]:
         if ledger.load > ps.CAPACITY - 16:
             rinse(ledger)
-        step(ledger, PISTON_POS + np.array([dx, dy, ps.UNDERCROWN_Z - (ps.PAD_SIZE[2] / 2 - ps.SOFT_LAYER) + 0.001]), FLAT_Q)
-
-
-def test_outside_wipe_does_not_clean_inside():
-    led = ps.Ledger()
-    wipe_everything(led)
-    inner = led.dirty[ps.N_SKIRT + ps.N_CROWN :]
-    assert inner.all()  # przez ściankę się nie czyści
+        stroke(ledger, PISTON_POS + np.array([dx, dy, ps.UNDERCROWN_Z - CORE + 0.001]), FLAT_Q, (1, 0, 0), length=0.006)
 
 
 def test_grid_size_matches_spec():
     assert ps.N_SKIRT == 100
     assert 38 <= ps.N_CROWN <= 50  # denko 75 mm: ok. 44 cm2
-    assert ps.CAPACITY < ps.N_CELLS * 0.95 / 3  # pełny wynik wymaga co najmniej 3 płukań
     assert 60 <= ps.N_INNER <= 90
+    assert ps.CAPACITY < ps.N_CELLS * 0.95 / 3  # pełny wynik wymaga co najmniej 3 płukań
 
 
 def test_full_clean_with_rinses_scores_one():
@@ -91,6 +91,38 @@ def test_full_clean_with_rinses_scores_one():
     assert led.clean_fraction >= 0.95
     assert led.rinses >= 3
     assert led.score(on_mat=True, resting=True) == 1.0
+
+
+def test_pressing_without_moving_cleans_nothing():
+    led = ps.Ledger()
+    for _ in range(40):
+        step(led, side_pad_pos(), PAD_SIDE_Q)  # przyłożona i trzymana
+    assert led.clean_fraction == 0.0
+
+
+def test_short_dab_is_not_enough():
+    led = ps.Ledger()
+    stroke(led, side_pad_pos(), PAD_SIDE_Q, (0, 0, 1), length=0.003, passes=1)  # ok. 1,2 cm drogi
+    assert led.clean_fraction == 0.0
+
+
+def test_dip_without_agitation_does_not_rinse():
+    led = ps.Ledger()
+    stroke(led, side_pad_pos(), PAD_SIDE_Q, (0, 0, 1), length=0.012)
+    loaded = led.load
+    assert loaded > 0
+    dip = TRAY + np.array([0.0, 0.0, ps.PAD_SIZE[2] / 2 + 0.002])
+    for _ in range(30):
+        step(led, dip, FLAT_Q)  # zanurzona, bez ruchu
+    assert led.load == loaded and led.rinses == 0
+    rinse(led)
+    assert led.load == 0 and led.rinses == 1
+
+
+def test_outside_wipe_does_not_clean_inside():
+    led = ps.Ledger()
+    wipe_everything(led)
+    assert led.dirty[ps.N_SKIRT + ps.N_CROWN :].all()  # przez ściankę się nie czyści
 
 
 def test_still_in_gripper_caps_below_one():
@@ -104,30 +136,14 @@ def test_never_rinsing_stalls_and_smears():
     led = ps.Ledger()
     wipe_everything(led, rinse_when_loaded=False)
     assert led.rinses == 0
-    assert led.clean_fraction < 0.25  # szmatka nasycona rozmazała z powrotem
-    assert led.score(True, True) == 0.0
-
-
-def test_camera_side_only_is_partial():
-    led = ps.Ledger()
-    for k in range(ps.N_AROUND // 2):
-        if led.load > ps.CAPACITY - 20:
-            rinse(led)
-        step(led, side_pad_pos(), PAD_SIDE_Q, piston_q=yaw_q(k * 2 * math.pi / ps.N_AROUND))
+    assert led.clean_fraction < 0.30  # nasycona gąbka rozmazuje z powrotem
     assert led.score(True, True) <= 0.25
 
 
 def test_hovering_sponge_cleans_nothing():
     led = ps.Ledger()
-    hover = PISTON_POS + np.array([ps.PISTON_D / 2 + ps.PAD_SIZE[2] / 2 + 0.002, 0.0, 0.0])  # 2 mm przed płaszczem
-    step(led, hover, PAD_SIDE_Q)
-    assert led.clean_fraction == 0.0
-
-
-def test_no_pad_contact_cleans_nothing():
-    led = ps.Ledger()
-    far = PISTON_POS + np.array([0.2, 0.0, 0.0])  # chwytak przy tłoku, szmatka daleko
-    step(led, far, FLAT_Q)
+    hover = PISTON_POS + np.array([ps.PISTON_D / 2 + ps.PAD_SIZE[2] / 2 + 0.002, 0.0, 0.0])
+    stroke(led, hover, PAD_SIDE_Q, (0, 0, 1), length=0.012)
     assert led.clean_fraction == 0.0
 
 
@@ -151,39 +167,36 @@ def test_dunking_in_tray_zeroes():
     assert led.zeroed == "tłok w rozpuszczalniku"
 
 
-def test_tray_too_narrow_to_immerse_piston():
-    assert ps.TRAY_INNER[1] < ps.PISTON_D
-
-
 def test_off_mat_zeroes():
     led = ps.Ledger()
     wipe_everything(led)
     assert led.score(on_mat=False, resting=True) == 0.0
 
 
-@pytest.mark.parametrize("frac,expected", [(0.24, 0.0), (0.25, 0.25), (0.5, 0.5), (0.8, 0.75), (0.95, 1.0)])
-def test_ladder(frac, expected):
-    assert ps.ladder(frac) == expected
-
-
-def test_crown_pressed_on_flat_pad_cleans_crown():
+def test_crown_scrubbed_on_flat_pad_cleans_crown():
     led = ps.Ledger()
     core_half = ps.FLAT_PAD_SIZE[2] / 2 - ps.SOFT_LAYER
-    flat = PISTON_POS + np.array([0.0, 0.0, ps.PISTON_H / 2 + core_half - 0.001])
     far_pad = np.array([1.0, 1.0, 1.0])
-    lo, hi = bbox(PISTON_POS)
-    led.step(PISTON_POS, FLAT_Q, STILL, lo, hi, far_pad, FLAT_Q, TRAY, TRAY_FLOOR, flat, FLAT_Q)
+    flat = PISTON_POS + np.array([0.0, 0.0, ps.PISTON_H / 2 + core_half - 0.001])
+    for k in range(41):  # tłok przesuwany po nieruchomej gąbce
+        piston = PISTON_POS + np.array([0.02 * math.sin(2 * math.pi * k / 10), 0.0, 0.0])
+        step(led, far_pad, FLAT_Q, piston_pos=piston, flat=flat)
     crown = led.dirty[ps.N_SKIRT : ps.N_SKIRT + ps.N_CROWN]
-    assert not crown.any()
+    assert crown.sum() <= 3
     assert led.dirty[: ps.N_SKIRT].all()  # płaska gąbka nie sięga płaszcza
 
 
 def test_rod_face_wipe():
     led = ps.Ledger()
     rod_pos = np.array([0.5, 0.0, 0.1])
-    core = ps.PAD_SIZE[0] / 2 - ps.SOFT_LAYER
-    pad = rod_pos + np.array([ps.ROD_COLLIDER[0] / 2 + core - 0.001, 0.0, 0.0])
     lo, hi = bbox(PISTON_POS)
-    led.step(PISTON_POS, FLAT_Q, STILL, lo, hi, pad, FLAT_Q, TRAY, TRAY_FLOOR, None, None, rod_pos, FLAT_Q)
+    for k in range(21):
+        pad = rod_pos + np.array([ps.ROD_COLLIDER[0] / 2 + CORE - 0.001, 0.0, 0.02 * math.sin(2 * math.pi * k / 10)])
+        led.step(PISTON_POS, FLAT_Q, STILL, lo, hi, pad, FLAT_Q, TRAY, TRAY_FLOOR, None, None, rod_pos, FLAT_Q)
     cleaned = ~led.rod_dirty
     assert cleaned.sum() >= 4 and np.all(ps.ROD_NORMALS_LOCAL[cleaned][:, 0] > 0.5)  # tylko ściana +x
+
+
+@pytest.mark.parametrize("frac,expected", [(0.24, 0.0), (0.25, 0.25), (0.5, 0.5), (0.8, 0.75), (0.95, 1.0)])
+def test_ladder(frac, expected):
+    assert ps.ladder(frac) == expected

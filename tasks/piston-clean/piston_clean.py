@@ -68,7 +68,7 @@ REST_SIZE = (0.03, 0.03, STICK_POS[2] - STICK_SIZE[2] / 2 - TOP)  # klocek pod b
 REST_POS = (STICK_POS[0] - STICK_SIZE[0] / 2 + 0.02, STICK_POS[1], TOP + REST_SIZE[2] / 2)
 STICK_JOINT = "sponge_glue"
 
-TRAY_CENTER = (0.36, 0.20)
+TRAY_CENTER = (0.46, 0.215)  # wanienka 20 x 15 x 5 cm za matą, przed lewą ręką
 FLAT_CORE = tuple(v - 2 * SOFT for v in ps.FLAT_PAD_SIZE)
 FLAT_POS = (0.24, -0.26, TOP + FLAT_CORE[2] / 2 + 0.001)  # płaska gąbka przed prawą ręką
 FLAT_MASS = 0.006
@@ -501,6 +501,8 @@ def _debug(objects) -> None:
         d = _LEDGER.dirty
         g = (ps.N_SKIRT, ps.N_SKIRT + ps.N_CROWN)
         row.append(f"clean={_LEDGER.clean_fraction:.2f} dirty skirt/crown/inner/rod={d[:g[0]].sum()}/{d[g[0]:g[1]].sum()}/{d[g[1]:].sum()}/{_LEDGER.rod_dirty.sum()} load={_LEDGER.load} rinses={_LEDGER.rinses} zero={_LEDGER.zeroed}")
+        az = np.degrees(np.arctan2(ps.CELLS_LOCAL[: ps.N_SKIRT, 1], ps.CELLS_LOCAL[: ps.N_SKIRT, 0])).round().astype(int)
+        row.append("az=" + ",".join(str(a) for a in sorted(set(az[d[: ps.N_SKIRT]].tolist()))))
         f.write(" ".join(row) + chr(10))
 
 
@@ -560,23 +562,37 @@ def _side_wipe(centre, psi, t=1.0):
     return [
         Waypoint(1.5 * t, _tcp_for_pad(far, stick_dir), FINGER_CLOSED, f"approach {math.degrees(psi):.0f}", stick_dir),
         Waypoint(1.0 * t, _tcp_for_pad(near, stick_dir), FINGER_CLOSED, "wipe", stick_dir),
-        Waypoint(0.5 * t, _tcp_for_pad(near, stick_dir), FINGER_CLOSED, "hold", stick_dir),
+        *[
+            Waypoint(0.5 * t, _tcp_for_pad((near[0], near[1], near[2] + dz), stick_dir), FINGER_CLOSED, "wipe", stick_dir)
+            for dz in (STROKE, -STROKE) * STROKES
+        ],
+        Waypoint(0.4 * t, _tcp_for_pad(near, stick_dir), FINGER_CLOSED, "wipe", stick_dir),
         Waypoint(0.8 * t, _tcp_for_pad(far, stick_dir), FINGER_CLOSED, "back off", stick_dir),
     ]
 
 
+STROKE, STROKES = 0.010, 2  # pociągnięcia gąbką w pionie: +-1 cm, 2 razy (ok. 8 cm drogi)
+
+
 def _rinse():
-    pad = (TRAY_CENTER[0], TRAY_CENTER[1], TRAY_FLOOR_Z + ps.PAD_SIZE[2] / 2 + 0.003)
-    above = (pad[0], pad[1], pad[2] + 0.08)
+    """Zanurzenie i płukanie z ruchem: gąbka w tę i z powrotem w rozpuszczalniku (ok. 24 cm drogi)."""
+    # gąbka zanurzona ~2 cm, kijek 3 mm nad ścianką; + SAG_Z, bo kijek z gąbką opada
+    wall_top = TRAY_FLOOR_Z + ps.TRAY_INNER[2]
+    pad = (TRAY_CENTER[0], TRAY_CENTER[1], wall_top - (STICK_DZ - STICK_SIZE[2] / 2) + 0.003 + SAG_Z)
+    above = (pad[0], pad[1], TRAY_FLOOR_Z + ps.TRAY_INNER[2] + 0.06)
+    agitate = [
+        Waypoint(0.45, _tcp_for_pad((pad[0] + dx, pad[1], pad[2]), 0.0), FINGER_CLOSED, "rinse", 0.0)
+        for dx in (0.03, -0.03) * 4
+    ]
     return [
         Waypoint(2.0, _tcp_for_pad(above, 0.0), FINGER_CLOSED, "over the tray", 0.0),
         Waypoint(1.0, _tcp_for_pad(pad, 0.0), FINGER_CLOSED, "dip", 0.0),
-        Waypoint(0.6, _tcp_for_pad(pad, 0.0), FINGER_CLOSED, "rinse", 0.0),
-        Waypoint(1.0, _tcp_for_pad(above, 0.0), FINGER_CLOSED, "lift out", 0.0),
+        *agitate,
+        Waypoint(1.2, _tcp_for_pad(above, 0.0), FINGER_CLOSED, "lift out", 0.0),
     ]
 
 
-PHASES = ((0, (50, 90, 130, 170, 190)), (-90, (130, 170, 190)), (90, (20, 60, 100)))  # yaw prawej -> azymuty gąbki
+PHASES = ((0, (50, 90, 130, 170, 190)), (-90, (100, 120, 140, 160, 190)), (90, (20, 40, 60, 100)))  # yaw prawej -> azymuty gąbki
 SHIFT = {0: (0.0, 0.0), -90: (0.0, 0.0), 90: (-0.07, 0.0)}  # przesunięcie punktu uniesienia w fazie (bliżej lewej ręki)
 
 
@@ -626,15 +642,20 @@ def demo() -> dict:
     right.append(Waypoint(max(_dur(left) - _dur(right), 0.1), right[-1].pos, FINGER_CLOSED, "hold", right[-1].yaw))
     # denko: z powrotem do yaw 0, nad płaską gąbkę, docisk, krótkie przetarcie
     off = np.asarray(HANG[0][0]) - np.asarray(lift)  # TCP -> środek tłoka przy yaw 0
-    crown_z = FLAT_POS[2] + FLAT_CORE[2] / 2 + ps.PISTON_H / 2 - 0.002  # rdzeń gąbki wciśnięty 2 mm
+    crown_z = FLAT_POS[2] + FLAT_CORE[2] / 2 + ps.PISTON_H / 2 - 0.013  # plan 13 mm w gąbkę: tłok na korbowodzie ustępuje (zmierzone: przy 8 mm brakło 2 mm)
     over = np.array([FLAT_POS[0], FLAT_POS[1], crown_z + 0.06]) - off
     press = np.array([FLAT_POS[0], FLAT_POS[1], crown_z]) - off
     right += [
         Waypoint(2.5, lift, FINGER_CLOSED, "turn 0", YAW_ACROSS_X),
         Waypoint(2.5, tuple(over), FINGER_CLOSED, "over the flat sponge", YAW_ACROSS_X),
         Waypoint(1.5, tuple(press), FINGER_CLOSED, "press crown", YAW_ACROSS_X),
-        Waypoint(1.0, tuple(press + (0.01, 0.0, 0.0)), FINGER_CLOSED, "press crown", YAW_ACROSS_X),
-        Waypoint(1.0, tuple(press - (0.01, 0.0, 0.0)), FINGER_CLOSED, "press crown", YAW_ACROSS_X),
+        # tłok na gąbce nie ślizga się, gdy ręka przesuwa się w bok (korbowód obraca się w palcach, zmierzone),
+        # więc przecieramy obrotem nadgarstka: tłok zatacza łuk po gąbce
+        *[
+            Waypoint(1.0, tuple(press), FINGER_CLOSED, "press crown", YAW_ACROSS_X + math.radians(a))
+            for a in (50, -50, 50, -50)
+        ],
+        Waypoint(0.5, tuple(press), FINGER_CLOSED, "press crown", YAW_ACROSS_X),
         Waypoint(1.5, tuple(over), FINGER_CLOSED, "lift off the sponge", YAW_ACROSS_X),
     ]
     # odłożenie na matę denkiem w dół i puszczenie (zespół sam się położy, jak na starcie)

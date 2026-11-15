@@ -41,9 +41,12 @@ CORE_TOUCH = 0.0015  # rdzeń musi dotykać powierzchni (komórka w rdzeniu + 1,
 WRAP = 0.006  # ściśnięta gąbka obejmuje krzywiznę: komórki do 6 mm za miękkim licem
 CAPACITY = 60  # tyle komórek zbiera czysta gąbka, zanim zacznie rozmazywać
 
-# wanienka celowo węższa niż średnica tłoka: tłoka nie da się w niej zanurzyć
-TRAY_INNER = (0.10, 0.06, 0.025)  # x, y, głębokość
-SOLVENT_DEPTH = 0.010
+# wanienka z rozpuszczalnikiem: na tyle duża, żeby gąbką dało się w niej poruszać (agitacja).
+# Zanurzenie tłoka jest możliwe fizycznie, ale zeruje epizod (to nie jest wycieranie).
+TRAY_INNER = (0.20, 0.15, 0.04)  # x, y, głębokość (kijek musi przejść nad ścianką przy zanurzonej gąbce)
+SOLVENT_DEPTH = 0.030
+RUB_NEEDED = 0.03  # komórka czysta po 3 cm drogi dociśniętej gąbki po powierzchni (samo przyłożenie nie czyści)
+RINSE_PER_M = 1000.0  # płukanie: 1 komórka ładunku mniej na każdy 1 mm ruchu gąbki w rozpuszczalniku
 
 DROP_HEIGHT = 0.03
 DROP_SPEED = math.sqrt(2 * 9.81 * DROP_HEIGHT)  # 0,77 m/s
@@ -189,11 +192,14 @@ class Ledger:
     """Stan epizodu, aktualizowany po każdym kroku sterowania."""
 
     dirty: np.ndarray = field(default_factory=lambda: np.ones(N_CELLS, dtype=bool))
-    load: int = 0
+    rub: np.ndarray = field(default_factory=lambda: np.zeros(N_CELLS))
+    load: float = 0.0
     rod_dirty: np.ndarray = field(default_factory=lambda: np.ones(N_ROD, dtype=bool))
-    load_flat: int = 0  # ładunek płaskiej gąbki (wanienka jest dla niej za mała: denko ma 45 komórek < CAPACITY)
+    rod_rub: np.ndarray = field(default_factory=lambda: np.zeros(N_ROD))
+    load_flat: float = 0.0  # płaska gąbka (denko ma 45 komórek < CAPACITY, więc bez płukania)
     rinses: int = 0
     zeroed: str | None = None  # powód zera za cały epizod
+    _prev: dict = field(default_factory=dict)  # poprzednie położenia gąbek (względem brył i w świecie)
 
     def step(
         self,
@@ -206,33 +212,50 @@ class Ledger:
         if self.zeroed is None and bbox_overlaps_tray(piston_low, piston_high, tray_center, tray_floor_z):
             self.zeroed = "tłok w rozpuszczalniku"
         rot = quat_xyzw_to_matrix(piston_quat)
-        cw = CELLS_LOCAL @ rot.T + np.asarray(piston_pos)
-        nw = NORMALS_LOCAL @ rot.T
+        pad_pos = np.asarray(pad_pos, dtype=float)
         if pad_in_solvent(pad_pos, tray_center, tray_floor_z):
-            if self.load:
-                self.rinses += 1
-            self.load = 0
+            last = self._prev.get("pad_wet")  # ruch liczy się tylko między krokami w rozpuszczalniku
+            if last is not None and self.load > 0:
+                self.load = max(0.0, self.load - RINSE_PER_M * float(np.linalg.norm(pad_pos - last)))
+                if self.load == 0.0:
+                    self.rinses += 1
+            self._prev["pad_wet"] = pad_pos
         else:
-            self.load = self._wipe(self.dirty, cw, nw, pad_pos, pad_quat, PAD_SIZE, self.load)
+            self._prev.pop("pad_wet", None)
+            self.load = self._wipe("pad|piston", self.dirty, self.rub, CELLS_LOCAL, NORMALS_LOCAL, rot, piston_pos,
+                                   pad_pos, pad_quat, PAD_SIZE, self.load)
             if rod_pos is not None:
                 rr = quat_xyzw_to_matrix(rod_quat)
-                rcw = ROD_CELLS_LOCAL @ rr.T + np.asarray(rod_pos)
-                self.load = self._wipe(self.rod_dirty, rcw, ROD_NORMALS_LOCAL @ rr.T, pad_pos, pad_quat, PAD_SIZE, self.load)
+                self.load = self._wipe("pad|rod", self.rod_dirty, self.rod_rub, ROD_CELLS_LOCAL, ROD_NORMALS_LOCAL, rr,
+                                       rod_pos, pad_pos, pad_quat, PAD_SIZE, self.load)
         if flat_pos is not None:
-            self.load_flat = self._wipe(self.dirty, cw, nw, flat_pos, flat_quat, FLAT_PAD_SIZE, self.load_flat)
+            self.load_flat = self._wipe("flat|piston", self.dirty, self.rub, CELLS_LOCAL, NORMALS_LOCAL, rot, piston_pos,
+                                        np.asarray(flat_pos, dtype=float), flat_quat, FLAT_PAD_SIZE, self.load_flat)
 
-    @staticmethod
-    def _wipe(dirty, cw, nw, pos, quat, size, load) -> int:
-        facing = np.einsum("ij,ij->i", np.asarray(pos) - cw, nw) > 0  # gąbka po stronie powierzchni
+    def _wipe(self, key, dirty, rub, cells, normals, rot, body_pos, pos, quat, size, load) -> float:
+        """Dociśnięta gąbka przesuwana po powierzchni zbiera olej z komórek, po których przejechała RUB_NEEDED."""
+        rel = rot.T @ (pos - np.asarray(body_pos))  # gąbka w układzie bryły
+        last = self._prev.get(key)
+        self._prev[key] = rel
+        cw = cells @ rot.T + np.asarray(body_pos)
+        nw = normals @ rot.T
+        facing = np.einsum("ij,ij->i", pos - cw, nw) > 0  # gąbka po stronie powierzchni
         touch = sponge_wipes(cw, facing, pos, quat, size)
-        if not touch.any():
+        if last is None or not touch.any():
             return load
-        if load >= CAPACITY:  # nasycona: rozmazuje
-            dirty |= touch
+        d = rel - last
+        slip = np.linalg.norm(d[None, :] - normals * (normals @ d)[:, None], axis=1)  # ruch styczny
+        moving = touch & (slip > 1e-5)
+        if not moving.any():
             return load
-        take = np.flatnonzero(touch & dirty)[: CAPACITY - load]
-        dirty[take] = False
-        return load + len(take)
+        if load >= CAPACITY:  # nasycona gąbka rozmazuje olej z powrotem
+            dirty |= moving
+            rub[moving] = 0.0
+            return load
+        rub[moving & dirty] += slip[moving & dirty]
+        done = np.flatnonzero(dirty & (rub >= RUB_NEEDED))[: int(CAPACITY - load)]
+        dirty[done] = False
+        return load + len(done)
 
     @property
     def clean_fraction(self) -> float:
