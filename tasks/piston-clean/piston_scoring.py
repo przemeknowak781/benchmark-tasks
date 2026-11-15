@@ -132,13 +132,17 @@ def pad_contacts(cells_w: np.ndarray, pad_pos: np.ndarray, pad_quat: np.ndarray,
     return np.all(np.abs(local) <= half, axis=1)
 
 
-def sponge_wipes(cells_w, facing, pad_pos, pad_quat) -> np.ndarray:
+def sponge_wipes(cells_w, facing, pad_pos, pad_quat, size=None) -> np.ndarray:
     """Czyści tylko dociśnięta gąbka: rdzeń dotyka powierzchni, a wtedy liczą się komórki pod miękką
     warstwą objętą z zapasem WRAP (gąbka ugina się na krzywiźnie). Bez docisku — nic."""
-    core = np.asarray(PAD_SIZE) / 2 - SOFT_LAYER + CORE_TOUCH
+    size = np.asarray(PAD_SIZE if size is None else size)
+    core = size / 2 - SOFT_LAYER + CORE_TOUCH
     if not (pad_contacts(cells_w, pad_pos, pad_quat, core) & facing).any():
         return np.zeros(len(cells_w), dtype=bool)
-    return pad_contacts(cells_w, pad_pos, pad_quat, np.asarray(PAD_SIZE) / 2 + WRAP) & facing
+    return pad_contacts(cells_w, pad_pos, pad_quat, size / 2 + WRAP) & facing
+
+
+FLAT_PAD_SIZE = (0.08, 0.08, 0.02)  # druga, płaska gąbka na macie: do denka (dociskanego od góry)
 
 
 def pad_in_solvent(pad_pos: np.ndarray, tray_center: np.ndarray, tray_floor_z: float) -> bool:
@@ -166,6 +170,7 @@ class Ledger:
 
     dirty: np.ndarray = field(default_factory=lambda: np.ones(N_CELLS, dtype=bool))
     load: int = 0
+    load_flat: int = 0  # ładunek płaskiej gąbki (wanienka jest dla niej za mała: denko ma 45 komórek < CAPACITY)
     rinses: int = 0
     zeroed: str | None = None  # powód zera za cały epizod
 
@@ -173,29 +178,35 @@ class Ledger:
         self,
         piston_pos, piston_quat, piston_vel, piston_low, piston_high,
         pad_pos, pad_quat, tray_center, tray_floor_z,
+        flat_pos=None, flat_quat=None,
     ) -> None:
         if self.zeroed is None and piston_vel[2] < -DROP_SPEED:
             self.zeroed = "upuszczony tłok"
         if self.zeroed is None and bbox_overlaps_tray(piston_low, piston_high, tray_center, tray_floor_z):
             self.zeroed = "tłok w rozpuszczalniku"
+        rot = quat_xyzw_to_matrix(piston_quat)
+        cw = CELLS_LOCAL @ rot.T + np.asarray(piston_pos)
+        nw = NORMALS_LOCAL @ rot.T
         if pad_in_solvent(pad_pos, tray_center, tray_floor_z):
             if self.load:
                 self.rinses += 1
             self.load = 0
-            return
-        rot = quat_xyzw_to_matrix(piston_quat)
-        cw = CELLS_LOCAL @ rot.T + np.asarray(piston_pos)
-        facing = np.einsum("ij,ij->i", np.asarray(pad_pos) - cw, NORMALS_LOCAL @ rot.T) > 0  # gąbka po stronie powierzchni
-        touch = sponge_wipes(cw, facing, pad_pos, pad_quat)
+        else:
+            self.load = self._wipe(cw, nw, pad_pos, pad_quat, PAD_SIZE, self.load)
+        if flat_pos is not None:
+            self.load_flat = self._wipe(cw, nw, flat_pos, flat_quat, FLAT_PAD_SIZE, self.load_flat)
+
+    def _wipe(self, cw, nw, pos, quat, size, load) -> int:
+        facing = np.einsum("ij,ij->i", np.asarray(pos) - cw, nw) > 0  # gąbka po stronie powierzchni
+        touch = sponge_wipes(cw, facing, pos, quat, size)
         if not touch.any():
-            return
-        if self.load >= CAPACITY:  # nasycona: rozmazuje
+            return load
+        if load >= CAPACITY:  # nasycona: rozmazuje
             self.dirty |= touch
-            return
-        newly = touch & self.dirty
-        take = np.flatnonzero(newly)[: CAPACITY - self.load]
+            return load
+        take = np.flatnonzero(touch & self.dirty)[: CAPACITY - load]
         self.dirty[take] = False
-        self.load += len(take)
+        return load + len(take)
 
     @property
     def clean_fraction(self) -> float:

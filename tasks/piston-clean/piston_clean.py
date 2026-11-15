@@ -43,6 +43,7 @@ PISTON = "piston"
 ROD = "conrod"
 STICK = "sponge_stick"
 PAD = "sponge"
+FLAT = "flat_sponge"
 PISTON_R = ps.PISTON_D / 2
 PISTON_POS = (0.30, 0.02, MAT_TOP + ps.PISTON_H / 2)  # tłok stoi denkiem na macie, płaszcz otwarty do góry
 PISTON_MASS = 0.30  # tłok ~245 g (oferty CP dla D16) + sworzeń rurowy ~55 g
@@ -68,6 +69,9 @@ REST_POS = (STICK_POS[0] - STICK_SIZE[0] / 2 + 0.02, STICK_POS[1], TOP + REST_SI
 STICK_JOINT = "sponge_glue"
 
 TRAY_CENTER = (0.36, 0.20)
+FLAT_CORE = tuple(v - 2 * SOFT for v in ps.FLAT_PAD_SIZE)
+FLAT_POS = (0.24, -0.26, TOP + FLAT_CORE[2] / 2 + 0.001)  # płaska gąbka przed prawą ręką
+FLAT_MASS = 0.006
 TRAY_WALL = 0.004
 TRAY_FLOOR_Z = TOP + 0.002  # dno wanienki (2 mm blachy)
 
@@ -100,6 +104,7 @@ OBJECTS = [
     Box("stick_rest", REST_POS, (0.35, 0.36, 0.38), size=REST_SIZE),
     Box(STICK, STICK_POS, WOOD_RGB, mass=STICK_MASS, size=STICK_SIZE),
     Box(PAD, PAD_POS, SPONGE_RGB, mass=PAD_MASS, size=PAD_CORE),
+    Box(FLAT, FLAT_POS, SPONGE_RGB, mass=FLAT_MASS, size=FLAT_CORE),
     *_tray_parts(),
 ]
 
@@ -259,6 +264,13 @@ def author_glue(stage: Any, env_root: str) -> None:
     _author_glue_joint(stage, env_root)
 
 
+def author_flat(stage: Any, env_root: str) -> None:
+    flat = f"{env_root}/{FLAT}"
+    _retire_primitive(stage, flat)
+    foam = _material(stage, f"{flat}/visual/foam", SPONGE_RGB, 0.0, 0.9)
+    _cube(stage, f"{flat}/visual/foam_block", (0.0, 0.0, 0.0), ps.FLAT_PAD_SIZE, foam)
+
+
 def _author_glue_joint(stage: Any, env_root: str) -> None:
     gf = importlib.import_module("pxr.Gf")
     physics = importlib.import_module("pxr.UsdPhysics")
@@ -313,6 +325,10 @@ def build_pin(scene: Any) -> bool:
     def task_object(spec: Any) -> Any:
         made = original(spec)
         name = getattr(spec, "name", None)
+        if name == FLAT:
+            for cfg in _spawner_cfgs(made):
+                if not getattr(cfg.func, "piston_pin", False):
+                    cfg.func = _with_pin(cfg.func, author_flat)
         if name == PAD:  # gąbka budowana po kijku: przyklejamy ją stałym przegubem
             for cfg in _spawner_cfgs(made):
                 if not getattr(cfg.func, "piston_pin", False):
@@ -412,6 +428,7 @@ def _observe(objects) -> None:
     _LEDGER.step(
         p.pos, _piston_quat_for_grid(p.quat_xyzw), p.lin_vel, p.low, p.high,
         pad.pos, pad.quat_xyzw, np.array([*TRAY_CENTER, 0.0]), TRAY_FLOOR_Z,
+        objects[FLAT].pos, objects[FLAT].quat_xyzw,
     )
 
 
@@ -426,7 +443,7 @@ def _debug(objects) -> None:
         return
     with open(_DEBUG, "a") as f:
         row = [f"{_N[0]:4d}"]
-        for name in (PISTON, ROD, STICK, PAD):
+        for name in (PISTON, ROD, PAD, FLAT):
             o = objects[name]
             row.append(f"{name}=({o.pos[0]:.3f},{o.pos[1]:.3f},{o.pos[2]:.3f}) q=({o.quat_xyzw[0]:.2f},{o.quat_xyzw[1]:.2f},{o.quat_xyzw[2]:.2f},{o.quat_xyzw[3]:.2f})")
         d = _LEDGER.dirty
@@ -552,5 +569,29 @@ def demo() -> dict:
                 left += _rinse()
             left += _side_wipe(centre, math.radians(deg))
             touches += 1
-    right.append(Waypoint(_dur(left) - _dur(right) + 1.0, right[-1].pos, FINGER_CLOSED, "hold", right[-1].yaw))
+    left.append(Waypoint(1.5, park, FINGER_CLOSED, "park the sponge", 0.0))
+    right.append(Waypoint(max(_dur(left) - _dur(right), 0.1), right[-1].pos, FINGER_CLOSED, "hold", right[-1].yaw))
+    # denko: z powrotem do yaw 0, nad płaską gąbkę, docisk, krótkie przetarcie
+    off = np.asarray(HANG[0][0]) - np.asarray(lift)  # TCP -> środek tłoka przy yaw 0
+    crown_z = FLAT_POS[2] + FLAT_CORE[2] / 2 + ps.PISTON_H / 2 - 0.002  # rdzeń gąbki wciśnięty 2 mm
+    over = np.array([FLAT_POS[0], FLAT_POS[1], crown_z + 0.06]) - off
+    press = np.array([FLAT_POS[0], FLAT_POS[1], crown_z]) - off
+    right += [
+        Waypoint(2.5, lift, FINGER_CLOSED, "turn 0", YAW_ACROSS_X),
+        Waypoint(2.5, tuple(over), FINGER_CLOSED, "over the flat sponge", YAW_ACROSS_X),
+        Waypoint(1.5, tuple(press), FINGER_CLOSED, "press crown", YAW_ACROSS_X),
+        Waypoint(1.0, tuple(press + (0.01, 0.0, 0.0)), FINGER_CLOSED, "press crown", YAW_ACROSS_X),
+        Waypoint(1.0, tuple(press - (0.01, 0.0, 0.0)), FINGER_CLOSED, "press crown", YAW_ACROSS_X),
+        Waypoint(1.5, tuple(over), FINGER_CLOSED, "lift off the sponge", YAW_ACROSS_X),
+    ]
+    # odłożenie na matę denkiem w dół i puszczenie (zespół sam się położy, jak na starcie)
+    rest = np.array([MAT_CENTER[0], MAT_CENTER[1], MAT_TOP + ps.PISTON_H / 2 + 0.004]) - off
+    right += [
+        Waypoint(2.5, tuple(rest + (0, 0, 0.05)), FINGER_CLOSED, "over the mat", YAW_ACROSS_X),
+        Waypoint(1.5, tuple(rest), FINGER_CLOSED, "set down", YAW_ACROSS_X),
+        Waypoint(0.8, tuple(rest), FINGER_OPEN, "release", YAW_ACROSS_X),
+        Waypoint(1.5, tuple(rest + (0, 0, 0.04)), FINGER_OPEN, "clear", YAW_ACROSS_X),
+        Waypoint(3.0, tuple(rest + (0, 0, 0.04)), FINGER_OPEN, "wait still", YAW_ACROSS_X),
+    ]
+    left.append(Waypoint(max(_dur(right) - _dur(left), 0.1), park, FINGER_CLOSED, "wait", 0.0))
     return {"left": left, "right": right}

@@ -164,3 +164,15 @@ def test_off_mat_zeroes():
 @pytest.mark.parametrize("frac,expected", [(0.24, 0.0), (0.25, 0.25), (0.5, 0.5), (0.8, 0.75), (0.95, 1.0)])
 def test_ladder(frac, expected):
     assert ps.ladder(frac) == expected
+
+
+def test_crown_pressed_on_flat_pad_cleans_crown():
+    led = ps.Ledger()
+    core_half = ps.FLAT_PAD_SIZE[2] / 2 - ps.SOFT_LAYER
+    flat = PISTON_POS + np.array([0.0, 0.0, ps.PISTON_H / 2 + core_half - 0.001])
+    far_pad = np.array([1.0, 1.0, 1.0])
+    lo, hi = bbox(PISTON_POS)
+    led.step(PISTON_POS, FLAT_Q, STILL, lo, hi, far_pad, FLAT_Q, TRAY, TRAY_FLOOR, flat, FLAT_Q)
+    crown = led.dirty[ps.N_SKIRT : ps.N_SKIRT + ps.N_CROWN]
+    assert not crown.any()
+    assert led.dirty[: ps.N_SKIRT].all()  # płaska gąbka nie sięga płaszcza
