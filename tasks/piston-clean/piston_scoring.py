@@ -1,4 +1,4 @@
-﻿"""Rdzeń punktacji zadania „Clean the oil off the piston” — czysty numpy, bez Isaac Sim.
+"""Rdzeń punktacji zadania „Clean the oil off the piston” — czysty numpy, bez Isaac Sim.
 
 Ten moduł zostanie wklejony do jednoplikowego pliku zadania `piston_clean.py` (yam_arena czyta jeden plik).
 Trzymam go osobno, żeby dało się go przetestować na maszynie bez symulatora.
@@ -22,14 +22,15 @@ from dataclasses import dataclass, field
 import numpy as np
 
 # --- geometria (m, kg) ----------------------------------------------------------------------------------
-PISTON_D = 0.065  # tłok jednocylindrowego silnika, aluminium odlewnicze
-PISTON_H = 0.055
-RING_BELT = 0.012  # górne 12 mm z rowkami pierścieni — poza punktacją (osobne narzędzie)
+PISTON_D = 0.075  # Honda D16 (1,6 l), aluminium; wymiary i źródła w piston_geometry.py
+PISTON_H = 0.050
+RING_BELT = 0.0175  # górne 17,5 mm z rowkami pierścieni — poza punktacją (osobne narzędzie)
+DISH_R, DISH_DEPTH = 0.026, 0.003  # wgłębienie w denku: tam komórki leżą 3 mm niżej
 N_AROUND = 20
 N_HIGH = 5
 CELL = 0.01
 
-PAD_SIZE = (0.05, 0.05, 0.012)  # szmatka 15 x 15 cm złożona w 9 warstw
+PAD_SIZE = (0.04, 0.04, 0.04)  # gąbka 4 cm na końcu kijka (jak szczotka do mycia części, bez metalu)
 CONTACT_GAP = 0.003  # 3 mm: komórka w zasięgu poduszki
 CAPACITY = 40  # tyle komórek zbiera czysta szmatka, zanim zacznie rozmazywać
 
@@ -57,10 +58,11 @@ def _skirt_cells() -> tuple[np.ndarray, np.ndarray]:
 
 def _crown_cells() -> tuple[np.ndarray, np.ndarray]:
     r = PISTON_D / 2
-    g = (np.arange(-3, 4) + 0.0) * CELL
+    g = (np.arange(-4, 5) + 0.0) * CELL
     gx, gy = np.meshgrid(g, g, indexing="ij")
     keep = np.hypot(gx, gy) <= r  # środki komórek wewnątrz denka
-    pts = np.stack([gx[keep], gy[keep], np.full(keep.sum(), PISTON_H / 2)], axis=1)
+    z = np.where(np.hypot(gx[keep], gy[keep]) < DISH_R, PISTON_H / 2 - DISH_DEPTH, PISTON_H / 2)
+    pts = np.stack([gx[keep], gy[keep], z], axis=1)
     normals = np.tile([0.0, 0.0, 1.0], (len(pts), 1))
     return pts, normals
 
@@ -98,9 +100,8 @@ def pad_contacts(cells_w: np.ndarray, pad_pos: np.ndarray, pad_quat: np.ndarray)
 
 def pad_in_solvent(pad_pos: np.ndarray, tray_center: np.ndarray, tray_floor_z: float) -> bool:
     dx, dy = np.abs(np.asarray(pad_pos[:2]) - np.asarray(tray_center[:2]))
-    return bool(
-        dx <= TRAY_INNER[0] / 2 and dy <= TRAY_INNER[1] / 2 and pad_pos[2] <= tray_floor_z + SOLVENT_DEPTH
-    )
+    low = pad_pos[2] - PAD_SIZE[2] / 2  # spód gąbki w rozpuszczalniku
+    return bool(dx <= TRAY_INNER[0] / 2 and dy <= TRAY_INNER[1] / 2 and low <= tray_floor_z + SOLVENT_DEPTH)
 
 
 def bbox_overlaps_tray(low: np.ndarray, high: np.ndarray, tray_center: np.ndarray, tray_floor_z: float) -> bool:

@@ -36,25 +36,28 @@ def rinse(ledger):
     step(ledger, TRAY + np.array([0, 0, 0.005]), FLAT_Q)
 
 
-def side_pad_pos():
-    return PISTON_POS + np.array([ps.PISTON_D / 2 + ps.PAD_SIZE[2] / 2, 0.0, 0.0])
+def side_pad_pos(dz=0.0):
+    return PISTON_POS + np.array([ps.PISTON_D / 2 + ps.PAD_SIZE[2] / 2, 0.0, dz])
 
 
 def wipe_everything(ledger, rinse_when_loaded=True):
     for k in range(ps.N_AROUND):
         if rinse_when_loaded and ledger.load > ps.CAPACITY - 20:
             rinse(ledger)
-        step(ledger, side_pad_pos(), PAD_SIDE_Q, piston_q=yaw_q(k * 2 * math.pi / ps.N_AROUND))
-    for dx, dy in ((0.01, 0.01), (-0.01, 0.01), (0.01, -0.01), (-0.01, -0.01)):
-        if rinse_when_loaded and ledger.load > ps.CAPACITY - 30:
+        for dz in (-0.012, 0.006):  # gąbka 4 cm: dwa pasy wzdłuż płaszcza
+            if rinse_when_loaded and ledger.load > ps.CAPACITY - 12:
+                rinse(ledger)
+            step(ledger, side_pad_pos(dz), PAD_SIDE_Q, piston_q=yaw_q(k * 2 * math.pi / ps.N_AROUND))
+    for dx, dy in [(a, b) for a in (-0.02, 0.0, 0.02) for b in (-0.02, 0.0, 0.02)]:
+        if rinse_when_loaded and ledger.load > ps.CAPACITY - 16:
             rinse(ledger)
-        top = PISTON_POS + np.array([dx, dy, ps.PISTON_H / 2 + ps.PAD_SIZE[2] / 2])
+        top = PISTON_POS + np.array([dx, dy, ps.PISTON_H / 2 + ps.PAD_SIZE[2] / 2 - 0.001])  # gąbka wciśnięta 1 mm
         step(ledger, top, FLAT_Q)
 
 
 def test_grid_size_matches_spec():
     assert ps.N_SKIRT == 100
-    assert 25 <= ps.N_CELLS - ps.N_SKIRT <= 37  # spec: denko ok. 30 komórek
+    assert 38 <= ps.N_CELLS - ps.N_SKIRT <= 50  # denko 75 mm: ok. 44 cm2
     assert ps.CAPACITY < ps.N_CELLS * 0.95 / 3  # pełny wynik wymaga co najmniej 3 płukań
 
 
