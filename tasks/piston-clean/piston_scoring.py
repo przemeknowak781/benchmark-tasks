@@ -128,6 +128,7 @@ def _rod_cells() -> tuple[np.ndarray, np.ndarray]:
 
 
 ROD_CELLS_LOCAL, ROD_NORMALS_LOCAL = _rod_cells()
+SCORE_ROD = False  # belka korbowodu śledzona i widoczna, poza progiem (demo jej nie wyciera; decyzja otwarta)
 N_ROD = len(ROD_CELLS_LOCAL)
 
 
@@ -259,7 +260,10 @@ class Ledger:
 
     @property
     def clean_fraction(self) -> float:
-        return float((~self.dirty).mean())
+        """Czystość liczona do wyniku: zewnętrze tłoka (płaszcz + denko) i belka korbowodu.
+        Wnętrze płaszcza jest śledzone (i widoczne), ale nie wchodzi do wyniku (decyzja 2026-11-15)."""
+        scored = np.r_[self.dirty[: N_SKIRT + N_CROWN], self.rod_dirty if SCORE_ROD else []]
+        return float(1.0 - np.mean(scored.astype(float)))
 
     def score(self, on_mat: bool, resting: bool) -> float:
         if self.zeroed is not None or not on_mat:

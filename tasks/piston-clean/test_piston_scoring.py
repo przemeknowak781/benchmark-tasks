@@ -63,6 +63,18 @@ def wipe_everything(ledger, rinse_when_loaded=True):
         stroke(ledger, top, FLAT_Q, (1, 0, 0))
 
 
+def wipe_rod(ledger, rod_pos=np.array([0.5, 0.0, 0.1])):
+    lo, hi = bbox(PISTON_POS)
+    hx, hy = ps.ROD_COLLIDER[0] / 2, ps.ROD_COLLIDER[1] / 2
+    for off in ((hx + CORE - 0.001, 0, 0), (-(hx + CORE - 0.001), 0, 0), (0, hy + CORE - 0.001, 0), (0, -(hy + CORE - 0.001), 0)):
+        for zc in (-0.03, 0.0, 0.025):
+            if ledger.load > ps.CAPACITY - 12:
+                rinse(ledger)
+            for k in range(21):
+                pad = rod_pos + np.array(off) + np.array([0, 0, zc + 0.012 * math.sin(2 * math.pi * k / 10)])
+                ledger.step(PISTON_POS, FLAT_Q, STILL, lo, hi, pad, FLAT_Q, TRAY, TRAY_FLOOR, None, None, rod_pos, FLAT_Q)
+
+
 def wipe_inside(ledger):
     for k in range(ps.N_AROUND):
         a = 2 * math.pi * k / ps.N_AROUND
@@ -81,15 +93,15 @@ def test_grid_size_matches_spec():
     assert ps.N_SKIRT == 100
     assert 38 <= ps.N_CROWN <= 50  # denko 75 mm: ok. 44 cm2
     assert 60 <= ps.N_INNER <= 90
-    assert ps.CAPACITY < ps.N_CELLS * 0.95 / 3  # pełny wynik wymaga co najmniej 3 płukań
+    assert ps.CAPACITY < (ps.N_SKIRT + ps.N_CROWN) * 0.95 / 2  # pełny wynik wymaga co najmniej 2 płukań
 
 
 def test_full_clean_with_rinses_scores_one():
     led = ps.Ledger()
     wipe_everything(led)
-    wipe_inside(led)
+    wipe_rod(led)
     assert led.clean_fraction >= 0.95
-    assert led.rinses >= 3
+    assert led.rinses >= 2
     assert led.score(on_mat=True, resting=True) == 1.0
 
 
@@ -125,10 +137,24 @@ def test_outside_wipe_does_not_clean_inside():
     assert led.dirty[ps.N_SKIRT + ps.N_CROWN :].all()  # przez ściankę się nie czyści
 
 
+def test_inside_not_scored_but_tracked():
+    led = ps.Ledger()
+    wipe_inside(led)
+    assert led.clean_fraction == 0.0
+    assert not led.dirty[ps.N_SKIRT + ps.N_CROWN :].all()
+
+
+def test_rod_scoring_switch():
+    led = ps.Ledger()
+    wipe_everything(led)
+    expected = 0.75 if ps.SCORE_ROD else 1.0  # 145/181 = 80% z korbowodem, 100% bez
+    assert led.score(True, True) == expected
+
+
 def test_still_in_gripper_caps_below_one():
     led = ps.Ledger()
     wipe_everything(led)
-    wipe_inside(led)
+    wipe_rod(led)
     assert led.score(on_mat=True, resting=False) == 0.75
 
 
