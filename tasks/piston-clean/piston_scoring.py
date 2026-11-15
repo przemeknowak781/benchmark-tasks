@@ -108,6 +108,26 @@ N_CROWN = len(_CROWN)
 N_INNER = len(_INNER)
 
 
+# --- korbowód: belka między stopą a łbem, 4 ściany (układ bryły korbowodu: długość z, stopa na -z) -------------
+ROD_COLLIDER = (0.020, 0.035)  # x grubość, y szerokość prostopadłościanu zderzeń
+ROD_BEAM_Z = (-0.0555, 0.0375)  # od stopy (r 13 mm) do łba (r 31 mm), CTC 137 mm
+
+
+def _rod_cells() -> tuple[np.ndarray, np.ndarray]:
+    zs = np.arange(ROD_BEAM_Z[0] + CELL / 2, ROD_BEAM_Z[1], CELL)
+    hx, hy = ROD_COLLIDER[0] / 2, ROD_COLLIDER[1] / 2
+    pts, nrm = [], []
+    for z in zs:
+        for p, n in (((hx, 0, z), (1, 0, 0)), ((-hx, 0, z), (-1, 0, 0)), ((0, hy, z), (0, 1, 0)), ((0, -hy, z), (0, -1, 0))):
+            pts.append(p)
+            nrm.append(n)
+    return np.asarray(pts, dtype=float), np.asarray(nrm, dtype=float)
+
+
+ROD_CELLS_LOCAL, ROD_NORMALS_LOCAL = _rod_cells()
+N_ROD = len(ROD_CELLS_LOCAL)
+
+
 def quat_xyzw_to_matrix(q: np.ndarray) -> np.ndarray:
     x, y, z, w = np.asarray(q, dtype=float) / np.linalg.norm(q)
     return np.array(
@@ -170,6 +190,7 @@ class Ledger:
 
     dirty: np.ndarray = field(default_factory=lambda: np.ones(N_CELLS, dtype=bool))
     load: int = 0
+    rod_dirty: np.ndarray = field(default_factory=lambda: np.ones(N_ROD, dtype=bool))
     load_flat: int = 0  # ładunek płaskiej gąbki (wanienka jest dla niej za mała: denko ma 45 komórek < CAPACITY)
     rinses: int = 0
     zeroed: str | None = None  # powód zera za cały epizod
@@ -178,7 +199,7 @@ class Ledger:
         self,
         piston_pos, piston_quat, piston_vel, piston_low, piston_high,
         pad_pos, pad_quat, tray_center, tray_floor_z,
-        flat_pos=None, flat_quat=None,
+        flat_pos=None, flat_quat=None, rod_pos=None, rod_quat=None,
     ) -> None:
         if self.zeroed is None and piston_vel[2] < -DROP_SPEED:
             self.zeroed = "upuszczony tłok"
@@ -192,20 +213,25 @@ class Ledger:
                 self.rinses += 1
             self.load = 0
         else:
-            self.load = self._wipe(cw, nw, pad_pos, pad_quat, PAD_SIZE, self.load)
+            self.load = self._wipe(self.dirty, cw, nw, pad_pos, pad_quat, PAD_SIZE, self.load)
+            if rod_pos is not None:
+                rr = quat_xyzw_to_matrix(rod_quat)
+                rcw = ROD_CELLS_LOCAL @ rr.T + np.asarray(rod_pos)
+                self.load = self._wipe(self.rod_dirty, rcw, ROD_NORMALS_LOCAL @ rr.T, pad_pos, pad_quat, PAD_SIZE, self.load)
         if flat_pos is not None:
-            self.load_flat = self._wipe(cw, nw, flat_pos, flat_quat, FLAT_PAD_SIZE, self.load_flat)
+            self.load_flat = self._wipe(self.dirty, cw, nw, flat_pos, flat_quat, FLAT_PAD_SIZE, self.load_flat)
 
-    def _wipe(self, cw, nw, pos, quat, size, load) -> int:
+    @staticmethod
+    def _wipe(dirty, cw, nw, pos, quat, size, load) -> int:
         facing = np.einsum("ij,ij->i", np.asarray(pos) - cw, nw) > 0  # gąbka po stronie powierzchni
         touch = sponge_wipes(cw, facing, pos, quat, size)
         if not touch.any():
             return load
         if load >= CAPACITY:  # nasycona: rozmazuje
-            self.dirty |= touch
+            dirty |= touch
             return load
-        take = np.flatnonzero(touch & self.dirty)[: CAPACITY - load]
-        self.dirty[take] = False
+        take = np.flatnonzero(touch & dirty)[: CAPACITY - load]
+        dirty[take] = False
         return load + len(take)
 
     @property

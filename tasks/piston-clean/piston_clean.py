@@ -215,6 +215,7 @@ def author_visuals(stage: Any, env_root: str) -> None:
     alu = _material(stage, f"{piston}/visual/alu", ALU, 0.6, 0.35)
     oil = _material(stage, f"{piston}/visual/oil", OILY, 0.1, 0.15)  # połyskliwy olej
     _author_dirt(stage, piston, oil)
+    _author_dirt(stage, rod, oil, ps.ROD_CELLS_LOCAL, ps.ROD_NORMALS_LOCAL, key="rod")
     steel = _material(stage, f"{rod}/visual/steel", (0.36, 0.37, 0.39), 0.85, 0.4)
     _mesh(stage, f"{piston}/visual/body", pg.lathe(pg.piston_profile(), 96), alu, P_BODY)
     inner = pg.R - pg.WALL
@@ -240,11 +241,12 @@ _DIRT_PATHS: dict[str, list[str]] = {}  # korzeń środowiska -> ścieżki łate
 _SHOWN: dict[str, np.ndarray] = {}
 
 
-def _author_dirt(stage, piston, mat) -> None:
+def _author_dirt(stage, piston, mat, cells=None, normals=None, key="piston") -> None:
     """Na każdej komórce kwadratowa łatka oleju 0,3 mm nad powierzchnią; znika, gdy komórka jest czysta."""
     half = ps.CELL * 0.48
-    cells = ps.CELLS_LOCAL @ P_BODY.T
-    normals = ps.NORMALS_LOCAL @ P_BODY.T
+    if cells is None:
+        cells = ps.CELLS_LOCAL @ P_BODY.T
+        normals = ps.NORMALS_LOCAL @ P_BODY.T
     paths = []
     for i, (c, n) in enumerate(zip(cells, normals)):
         n = n / np.linalg.norm(n)
@@ -256,14 +258,14 @@ def _author_dirt(stage, piston, mat) -> None:
         path = f"{piston}/visual/dirt/c{i:03d}"
         _mesh(stage, path, (quad, np.array([4]), np.arange(4)), mat)
         paths.append(path)
-    root = piston.rsplit("/", 1)[0]
+    root = piston.rsplit("/", 1)[0] + "|" + key
     _DIRT_PATHS[root] = paths
     _SHOWN[root] = np.ones(len(paths), dtype=bool)
 
 
-def _show_dirt(dirty: np.ndarray) -> None:
+def _show_dirt(dirty: np.ndarray, rod_dirty: np.ndarray | None = None) -> None:
     """Pokazuje stan oleju na tłoku (tylko zmienione łatki). Bez symulatora — nic."""
-    if not _DIRT_PATHS:
+    if not _DIRT_PATHS or __import__("os").environ.get("PISTON_NODIRT"):
         return
     try:
         stage = importlib.import_module("omni.usd").get_context().get_stage()
@@ -271,13 +273,16 @@ def _show_dirt(dirty: np.ndarray) -> None:
     except Exception:
         return
     for root, paths in _DIRT_PATHS.items():
-        changed = np.flatnonzero(_SHOWN[root] != dirty)
+        state = rod_dirty if root.endswith("|rod") else dirty
+        if state is None:
+            continue
+        changed = np.flatnonzero(_SHOWN[root] != state)
         for i in changed:
             prim = stage.GetPrimAtPath(paths[i])
             if prim.IsValid():
                 img = geom.Imageable(prim)
-                img.MakeVisible() if dirty[i] else img.MakeInvisible()
-        _SHOWN[root] = dirty.copy()
+                img.MakeVisible() if state[i] else img.MakeInvisible()
+        _SHOWN[root] = state.copy()
 
 
 def author_pin_and_visuals(stage: Any, env_root: str) -> None:
@@ -475,7 +480,7 @@ def _observe(objects) -> None:
     _LEDGER.step(
         p.pos, _piston_quat_for_grid(p.quat_xyzw), p.lin_vel, p.low, p.high,
         pad.pos, pad.quat_xyzw, np.array([*TRAY_CENTER, 0.0]), TRAY_FLOOR_Z,
-        objects[FLAT].pos, objects[FLAT].quat_xyzw,
+        objects[FLAT].pos, objects[FLAT].quat_xyzw, objects[ROD].pos, objects[ROD].quat_xyzw,
     )
 
 
@@ -495,13 +500,13 @@ def _debug(objects) -> None:
             row.append(f"{name}=({o.pos[0]:.3f},{o.pos[1]:.3f},{o.pos[2]:.3f}) q=({o.quat_xyzw[0]:.2f},{o.quat_xyzw[1]:.2f},{o.quat_xyzw[2]:.2f},{o.quat_xyzw[3]:.2f})")
         d = _LEDGER.dirty
         g = (ps.N_SKIRT, ps.N_SKIRT + ps.N_CROWN)
-        row.append(f"clean={_LEDGER.clean_fraction:.2f} dirty skirt/crown/inner={d[:g[0]].sum()}/{d[g[0]:g[1]].sum()}/{d[g[1]:].sum()} load={_LEDGER.load} rinses={_LEDGER.rinses} zero={_LEDGER.zeroed}")
+        row.append(f"clean={_LEDGER.clean_fraction:.2f} dirty skirt/crown/inner/rod={d[:g[0]].sum()}/{d[g[0]:g[1]].sum()}/{d[g[1]:].sum()}/{_LEDGER.rod_dirty.sum()} load={_LEDGER.load} rinses={_LEDGER.rinses} zero={_LEDGER.zeroed}")
         f.write(" ".join(row) + chr(10))
 
 
 def score(objects) -> float:
     _observe(objects)
-    _show_dirt(_LEDGER.dirty)
+    _show_dirt(_LEDGER.dirty, _LEDGER.rod_dirty)
     if _DEBUG:
         _debug(objects)
     p, rod = objects[PISTON], objects[ROD]

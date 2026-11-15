@@ -176,3 +176,14 @@ def test_crown_pressed_on_flat_pad_cleans_crown():
     crown = led.dirty[ps.N_SKIRT : ps.N_SKIRT + ps.N_CROWN]
     assert not crown.any()
     assert led.dirty[: ps.N_SKIRT].all()  # płaska gąbka nie sięga płaszcza
+
+
+def test_rod_face_wipe():
+    led = ps.Ledger()
+    rod_pos = np.array([0.5, 0.0, 0.1])
+    core = ps.PAD_SIZE[0] / 2 - ps.SOFT_LAYER
+    pad = rod_pos + np.array([ps.ROD_COLLIDER[0] / 2 + core - 0.001, 0.0, 0.0])
+    lo, hi = bbox(PISTON_POS)
+    led.step(PISTON_POS, FLAT_Q, STILL, lo, hi, pad, FLAT_Q, TRAY, TRAY_FLOOR, None, None, rod_pos, FLAT_Q)
+    cleaned = ~led.rod_dirty
+    assert cleaned.sum() >= 4 and np.all(ps.ROD_NORMALS_LOCAL[cleaned][:, 0] > 0.5)  # tylko ściana +x
