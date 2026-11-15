@@ -12,6 +12,7 @@ smears it back instead of cleaning, until it is rinsed in the solvent tray.
 
 # No `from __future__ import annotations`: the task loader imports this file without registering it in
 # sys.modules (see finish-painting-panel).
+import functools
 import importlib
 import importlib.abc
 import importlib.util
@@ -471,12 +472,62 @@ def _piston_quat_for_grid(q_xyzw: np.ndarray) -> np.ndarray:
     return np.array([(r[2, 1] - r[1, 2]) / (4 * w), (r[0, 2] - r[2, 0]) / (4 * w), (r[1, 0] - r[0, 1]) / (4 * w), w])
 
 
-def _observe(objects) -> None:
+_hooked_to: Any = None  # embodiment, którego reset jest owinięty
+RESET_TAG = "piston_clean_new_episode"
+
+
+def new_episode() -> None:
+    """Pusta księga na nową próbę i olej z powrotem na wszystkich komórkach."""
     global _LEDGER
+    _LEDGER = ps.Ledger()
+    _show_dirt(_LEDGER.dirty, _LEDGER.rod_dirty)
+
+
+def _calling_embodiment() -> Any:
+    """Embodiment wywołujący score(), rozpoznany po tym, co ma (zegar epizodu, zadanie, reset) — wzorzec z
+    finish-painting-panel: plik zadania nie dostaje haka na reset."""
+    frame = sys._getframe(2)
+    while frame is not None:
+        cand = frame.f_locals.get("self")
+        if cand is not None and hasattr(cand, "_t") and hasattr(cand, "task") and callable(getattr(cand, "reset", None)):
+            return cand
+        frame = frame.f_back
+    return None
+
+
+def _hook_resets() -> None:
+    global _hooked_to
+    emb = _calling_embodiment()
+    if emb is None or emb is _hooked_to:
+        return
+    original = emb.reset
+    if getattr(original, RESET_TAG, None) is new_episode:
+        _hooked_to = emb
+        return
+
+    @functools.wraps(original)
+    def reset(*args: Any, **kwargs: Any) -> Any:
+        new_episode()
+        return original(*args, **kwargs)
+
+    setattr(reset, RESET_TAG, new_episode)
+    try:
+        emb.reset = reset
+        _hooked_to = emb
+    except (AttributeError, TypeError):
+        _warn_once("reset", "could not hook the embodiment's reset; the start pose starts a new trial")
+
+
+def _observe(objects) -> None:
+    try:
+        _hook_resets()
+    except Exception as error:  # nietypowy wywołujący: dalej bez haka
+        _warn_once("hook", f"could not look for the embodiment ({type(error).__name__}: {error})")
     p, pad = objects[PISTON], objects[PAD]
-    at_start = np.linalg.norm(np.asarray(p.pos) - _START) < 0.01 and np.linalg.norm(np.asarray(pad.pos) - np.array(PAD_POS)) < 0.01
-    if at_start and (_LEDGER.zeroed or _LEDGER.clean_fraction > 0) and p.resting():
-        _LEDGER = ps.Ledger()  # nowa próba (stan startowy); w wersji do zgłoszenia: hak na reset jak w malowaniu
+    if _hooked_to is None:  # zapasowo: zespół i gąbka w położeniu startowym = nowa próba
+        at_start = np.linalg.norm(np.asarray(p.pos) - _START) < 0.01 and np.linalg.norm(np.asarray(pad.pos) - np.array(PAD_POS)) < 0.01
+        if at_start and (_LEDGER.zeroed or _LEDGER.clean_fraction > 0) and p.resting():
+            new_episode()
     _LEDGER.step(
         p.pos, _piston_quat_for_grid(p.quat_xyzw), p.lin_vel, p.low, p.high,
         pad.pos, pad.quat_xyzw, np.array([*TRAY_CENTER, 0.0]), TRAY_FLOOR_Z,
