@@ -551,6 +551,7 @@ def _debug(objects) -> None:
             row.append(f"{name}=({o.pos[0]:.3f},{o.pos[1]:.3f},{o.pos[2]:.3f}) q=({o.quat_xyzw[0]:.2f},{o.quat_xyzw[1]:.2f},{o.quat_xyzw[2]:.2f},{o.quat_xyzw[3]:.2f})")
         d = _LEDGER.dirty
         g = (ps.N_SKIRT, ps.N_SKIRT + ps.N_CROWN)
+        row.append(f"piston_low={objects[PISTON].low[2]:.4f} rod_low={objects[ROD].low[2]:.4f} mat_top={MAT_TOP:.4f}")
         row.append(f"clean={_LEDGER.clean_fraction:.2f} dirty skirt/crown/inner/rod={d[:g[0]].sum()}/{d[g[0]:g[1]].sum()}/{d[g[1]:].sum()}/{_LEDGER.rod_dirty.sum()} load={_LEDGER.load} rinses={_LEDGER.rinses} zero={_LEDGER.zeroed}")
         az = np.degrees(np.arctan2(ps.CELLS_LOCAL[: ps.N_SKIRT, 1], ps.CELLS_LOCAL[: ps.N_SKIRT, 0])).round().astype(int)
         row.append("az=" + ",".join(str(a) for a in sorted(set(az[d[: ps.N_SKIRT]].tolist()))))
@@ -565,7 +566,10 @@ def score(objects) -> float:
     p, rod = objects[PISTON], objects[ROD]
     cx, cy = MAT_CENTER
     on_mat = abs(p.pos[0] - cx) <= MAT_SIZE[0] / 2 and abs(p.pos[1] - cy) <= MAT_SIZE[1] / 2 and p.low[2] <= MAT_TOP + 0.01
-    return _LEDGER.score(on_mat=bool(on_mat), resting=p.resting() and rod.resting())
+    # puszczony: korbowód też leży na macie (w ręce wisiałby nad nią) — zastępstwo stanu chwytaków,
+    # których score() nie widzi
+    released = rod.low[2] <= MAT_TOP + 0.015
+    return _LEDGER.score(on_mat=bool(on_mat), resting=bool(p.resting() and rod.resting() and released))
 
 
 # --- demo (iteracja 1): chwyt korbowodu, podniesienie, obrót; prawa ręka bierze kijek -----------------------------

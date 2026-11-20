@@ -50,8 +50,9 @@ in `task.json` and in `piston_scoring.py`; in short:
 - **Sponge load:** the stick sponge holds 60 cells of oil; a full sponge smears oil back onto the cells it rubs.
   It unloads 1 cell per millimetre it moves while submerged in the solvent; dipping it without moving does not
   rinse it. The flat sponge is larger than the crown and needs no rinse.
-- **Ladder:** 0.25 at 25% clean, 0.5 at 50%, 0.75 at 75%, 1.0 at 95% with the assembly resting still on the mat
-  (0.75 if it is still held or moving).
+- **Ladder:** 0.25 at 25% clean, 0.5 at 50%, 0.75 at 75%, 1.0 at 95% with the piston and its rod both lying still
+  on the mat (0.75 if it is still held or moving). `score()` cannot see the grippers, so "released" is checked as
+  the rod's lowest point being on the mat (within 1.5 cm): a rod still in a gripper hangs above it.
 - **Zero:** the piston falls faster than 0.77 m/s (a free fall from 3 cm), the piston enters the solvent, or it ends
   off the mat.
 
