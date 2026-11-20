@@ -242,26 +242,119 @@ _DIRT_PATHS: dict[str, list[str]] = {}  # korzeń środowiska -> ścieżki łate
 _SHOWN: dict[str, np.ndarray] = {}
 
 
+def _patch_sizes(key: str) -> list:
+    """Rozmiar łatki na komórkę: łatki stykają się z zakładką 6%, żeby olej był ciągłą warstwą."""
+    k = 1.06
+    if key == "rod":
+        return [("flat", ps.CELL * k, (ps.ROD_COLLIDER[1] if abs(n[0]) > 0.5 else ps.ROD_COLLIDER[0]) * k)
+                for n in ps.ROD_NORMALS_LOCAL]
+    skirt_h = (ps.PISTON_H - ps.RING_BELT) / ps.N_HIGH
+    inner_h = (ps.BELT_Z + ps.PISTON_H / 2) / 3
+    out = []
+    for i, n in enumerate(ps.NORMALS_LOCAL):
+        if abs(n[2]) > 0.5:  # denko i spód denka: dysk podzielony między najbliższe komórki (bez szpar przy brzegu)
+            out.append(("disk", 0.0, 0.0))
+        else:  # płaszcz z zewnątrz i od środka: wycinek walca
+            out.append(("arc", 2 * math.pi / ps.N_AROUND * k, (skirt_h if i < ps.N_SKIRT else inner_h) * k))
+    return out
+
+
+def _crown_z(r: float) -> float:
+    """Wysokość denka w układzie siatki (denko +z) na promieniu r: wgłębienie 3 mm, potem płasko."""
+    top = ps.PISTON_H / 2
+    if r <= pg.DISH_FLOOR_R:
+        return top - pg.DISH_DEPTH
+    if r <= pg.DISH_R:
+        return top - pg.DISH_DEPTH * (pg.DISH_R - r) / (pg.DISH_R - pg.DISH_FLOOR_R)
+    return top
+
+
+def _disk_patches() -> dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    """Denko i spód denka jako drobna siatka biegunowa; każdy trójkąt należy do najbliższej komórki tej samej
+    powierzchni. Łatki stykają się bez szpar i kończą równo z brzegiem (układ siatki, przed P_BODY)."""
+    out: dict[int, tuple] = {}
+    groups = [
+        (np.flatnonzero(ps.NORMALS_LOCAL[:, 2] > 0.5), pg.R, _crown_z, +1.0),
+        (np.flatnonzero(ps.NORMALS_LOCAL[:, 2] < -0.5), ps.UNDERCROWN_R, lambda r: ps.UNDERCROWN_Z, -1.0),
+    ]
+    lift = 0.0006
+    for ids, rd, zf, side in groups:
+        rings, sectors = 16, 72
+        rr = np.linspace(0.0, rd, rings + 1)
+        tt = np.linspace(0.0, 2 * math.pi, sectors, endpoint=False)
+        tris = []
+        for i in range(rings):
+            for j in range(sectors):
+                j2 = (j + 1) % sectors
+                a, b = (rr[i], tt[j]), (rr[i + 1], tt[j])
+                c, d = (rr[i + 1], tt[j2]), (rr[i], tt[j2])
+                tris.append((a, b, c))
+                if i > 0:
+                    tris.append((a, c, d))
+        xy = ps.CELLS_LOCAL[ids, :2]
+        per = {int(c): [] for c in ids}
+        for tri in tris:
+            pts = [(r * math.cos(t), r * math.sin(t), zf(r) + side * lift) for r, t in tri]
+            cen = np.mean(np.asarray(pts)[:, :2], axis=0)
+            owner = int(ids[np.argmin(np.sum((xy - cen) ** 2, axis=1))])
+            per[owner].append(pts)
+        for cid, tl in per.items():
+            if not tl:
+                continue
+            pts = np.asarray([p for t in tl for p in t])
+            out[cid] = (pts, np.full(len(tl), 3), np.arange(len(pts)))
+    return out
+
+
 def _author_dirt(stage, piston, mat, cells=None, normals=None, key="piston") -> None:
-    """Na każdej komórce kwadratowa łatka oleju 0,3 mm nad powierzchnią; znika, gdy komórka jest czysta."""
-    half = ps.CELL * 0.48
+    """Na każdej komórce łatka oleju 0,6 mm nad powierzchnią (na płaszczu wygięta po walcu); łatki zachodzą na
+    siebie, więc brudna powierzchnia jest jednolita. Łatka znika, gdy komórka jest czysta."""
     if cells is None:
         cells = ps.CELLS_LOCAL @ P_BODY.T
         normals = ps.NORMALS_LOCAL @ P_BODY.T
+    lift = 0.0006
+    disks = _disk_patches() if key == "piston" else {}
     paths = []
-    for i, (c, n) in enumerate(zip(cells, normals)):
+    for i, (c, n, (kind, sa, sb)) in enumerate(zip(cells, normals, _patch_sizes(key))):
         n = n / np.linalg.norm(n)
-        a = np.cross(n, [0.0, 0.0, 1.0]) if abs(n[2]) < 0.9 else np.cross(n, [1.0, 0.0, 0.0])
-        a /= np.linalg.norm(a)
-        b = np.cross(n, a)
-        o = c + n * 0.0003
-        quad = np.array([o - half * a - half * b, o + half * a - half * b, o + half * a + half * b, o - half * a + half * b])
+        if kind == "disk":
+            dpts, counts, idx = disks.get(i, (np.zeros((3, 3)), np.array([3]), np.arange(3)))
+            pts = dpts @ P_BODY.T
+        elif kind == "arc":
+            rc = math.hypot(c[0], c[1])
+            r = rc + lift * float(np.dot(n[:2], np.asarray(c[:2]) / rc))  # na zewnątrz lub do środka
+            th0 = math.atan2(c[1], c[0])
+            ths = th0 + np.linspace(-sa / 2, sa / 2, 5)
+            lo = [(r * math.cos(t), r * math.sin(t), c[2] - sb / 2) for t in ths]
+            hi = [(r * math.cos(t), r * math.sin(t), c[2] + sb / 2) for t in ths]
+            pts = np.array(lo + hi)
+            counts = np.full(4, 4)
+            idx = np.array([[j, j + 1, 6 + j, 5 + j] for j in range(4)]).ravel()
+        else:
+            a = np.cross(n, [0.0, 0.0, 1.0]) if abs(n[2]) < 0.9 else np.array([1.0, 0.0, 0.0])
+            a /= np.linalg.norm(a)
+            bvec = np.cross(n, a)
+            o = c + n * lift
+            pts = np.array([o - sa / 2 * a - sb / 2 * bvec, o + sa / 2 * a - sb / 2 * bvec,
+                            o + sa / 2 * a + sb / 2 * bvec, o - sa / 2 * a + sb / 2 * bvec])
+            counts, idx = np.array([4]), np.arange(4)
         path = f"{piston}/visual/dirt/c{i:03d}"
-        _mesh(stage, path, (quad, np.array([4]), np.arange(4)), mat)
+        _mesh(stage, path, (pts, counts, idx), mat)
         paths.append(path)
     root = piston.rsplit("/", 1)[0] + "|" + key
     _DIRT_PATHS[root] = paths
     _SHOWN[root] = np.ones(len(paths), dtype=bool)
+
+
+def author_solvent(stage: Any, env_root: str) -> None:
+    """Rozpuszczalnik w wanience: półprzezroczysta warstwa 3 cm, tylko do widoku (bez zderzeń)."""
+    sdf = importlib.import_module("pxr.Sdf")
+    floor = f"{env_root}/tray_floor"
+    mat = _material(stage, f"{floor}/visual/solvent", (0.55, 0.72, 0.85), 0.0, 0.05)
+    shader = stage.GetPrimAtPath(f"{floor}/visual/solvent/shader")
+    importlib.import_module("pxr.UsdShade").Shader(shader).CreateInput("opacity", sdf.ValueTypeNames.Float).Set(0.45)
+    ix, iy, _ = ps.TRAY_INNER
+    _cube(stage, f"{floor}/visual/solvent_layer", (0.0, 0.0, 0.001 + ps.SOLVENT_DEPTH / 2), (ix, iy, ps.SOLVENT_DEPTH), mat)
 
 
 def _show_dirt(dirty: np.ndarray, rod_dirty: np.ndarray | None = None) -> None:
@@ -378,6 +471,10 @@ def build_pin(scene: Any) -> bool:
     def task_object(spec: Any) -> Any:
         made = original(spec)
         name = getattr(spec, "name", None)
+        if name == "tray_floor":
+            for cfg in _spawner_cfgs(made):
+                if not getattr(cfg.func, "piston_pin", False):
+                    cfg.func = _with_pin(cfg.func, author_solvent)
         if name == FLAT:
             for cfg in _spawner_cfgs(made):
                 if not getattr(cfg.func, "piston_pin", False):

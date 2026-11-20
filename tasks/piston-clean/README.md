@@ -29,7 +29,7 @@ Dream-1:
 inspect-robots run --embodiment yam_arena --policy dream \
   -E task=tasks/piston-clean/piston_clean.py -E object_jitter=0 \
   -E control_hz=20 -E cam_width=320 -E cam_height=176 \
-  --instruction "Clean the oil off the piston." \
+  --instruction "Clean the oil off the outside of the piston." \
   --scorer task_score --max-steps 4800 --store-frames --log-dir ~/yam-eval/piston-dream
 ```
 
