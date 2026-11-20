@@ -9,6 +9,6 @@
   "run_limit": "4,800 steps (4 minutes at 20 Hz)",
   "reset_notes": "Re-apply a fixed amount of dyed oil with a brush; replace both sponges and the solvent.",
   "fidelity": "Oil is a per-cell state: a cell clears after the sponge, pressed so its 3 cm core touches, slides 3 cm over it; 5 mm of foam conforms to curvature. The sponge holds 60 cells, then smears; it unloads 1 cell per mm moved in solvent. Solvent is not a fluid. Colliders are simple shapes with the real sizes; the piston and rod meshes are visual. Sponges are rigid cores, not deformable.",
-  "scores": "Dream-1 run: TODO; demo: 1.0",
+  "scores": "Dream-1 run: 0.0; demo: 1.0",
   "media": "TODO"
 }
